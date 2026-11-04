@@ -132,7 +132,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .apt/archives
-          key: apt-archives-${{ runner.os }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
+          # Carries ${CACHE_GEN} like every other key below, so the cache-pruning step at
+          # the end of the job recognises it as current. A key without the generation
+          # component would be pruned the moment it was written.
+          key: apt-archives-${{ runner.os }}-${{ env.CACHE_GEN }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
           restore-keys: |
             apt-archives-${{ runner.os }}-
 
@@ -209,7 +212,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .apt/archives
-          key: apt-archives-${{ runner.os }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
+          key: apt-archives-${{ runner.os }}-${{ env.CACHE_GEN }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
 
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -602,3 +605,57 @@ jobs:
             - 首次使用请修改密码
             - 请勿跨版本保留配置刷机
             - 刷机前请备份重要数据
+
+      - name: Prune caches from superseded key schemes
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_GEN: "-${{ env.CACHE_GEN }}-"
+          KEEP_SHA_DISPATCH: ${{ github.sha }}
+          KEEP_SHA_CHECK: ${{ needs.check.outputs.commitHash }}
+        run: |
+          # Every key this workflow writes carries -${CACHE_GEN}- (feeds, toolchain, tools,
+          # ccache, packages, apt-archives); the built-<commit> markers are the only
+          # exception and are matched by hash below. Anything else came from an older key
+          # scheme and can never be an exact hit again -- but it can still be a restore-keys
+          # hit, because those prefixes stop before the generation component, and
+          # restore-keys resolves to the most recently created match. So a stale entry can
+          # win over the live one and restore a tree that then has to be rebuilt anyway.
+          # Keeping them is a net loss, and 19 such entries (9.2 GB) are what pushed this
+          # repository past GitHub's 10 GB per-repo cache quota -- past which eviction is
+          # LRU across *all* entries and can take a live toolchain snapshot.
+          # Any new cache key must carry -${CACHE_GEN}- or be exempted here.
+          api="https://api.github.com/repos/${{ github.repository }}/actions/caches"
+          : > /tmp/caches.ndjson
+          page=1
+          while :; do
+            resp=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+                     -H "Accept: application/vnd.github+json" "$api?per_page=100&page=$page") \
+              || { echo "listing caches failed on page $page; skipping the prune"; exit 0; }
+            printf '%s' "$resp" | jq -c '.actions_caches[]' >> /tmp/caches.ndjson
+            [ "$(printf '%s' "$resp" | jq '.actions_caches | length')" -lt 100 ] && break
+            page=$((page + 1))
+          done
+          jq -r '[.id, (.size_in_bytes // 0), .key] | @tsv' /tmp/caches.ndjson > /tmp/caches.tsv
+          before=0; kept=0; pruned=0
+          while IFS=$'\t' read -r id size key; do
+            before=$((before + size))
+            case "$key" in
+              *"$KEEP_GEN"*) ;;
+              built-"$KEEP_SHA_DISPATCH"|built-"$KEEP_SHA_CHECK") ;;
+              *)
+                code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" "$api/$id")
+                if [ "$code" = 204 ]; then
+                  pruned=$((pruned + 1))
+                  echo "  pruned $((size / 1048576)) MB  $key"
+                  continue
+                fi
+                echo "  prune failed (HTTP $code)  $key"
+                ;;
+            esac
+            kept=$((kept + size))
+          done < /tmp/caches.tsv
+          entries=$(( $(wc -l < /tmp/caches.tsv) - pruned ))
+          echo "cache: kept $entries entries / $((kept / 1048576)) MB, pruned $pruned, was $((before / 1048576)) MB"
