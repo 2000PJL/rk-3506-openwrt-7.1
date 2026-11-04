@@ -165,6 +165,24 @@ jobs:
           restore-keys: |
             feeds-
 
+      - name: Update and install feeds
+        run: |
+          if [ "${{ steps.feeds.outputs.cache-hit }}" != "true" ]; then
+            echo "Feeds cache miss, updating from remote..."
+            ./scripts/feeds update -a
+          else
+            echo "Feeds cache hit, skipping update."
+          fi
+          ./scripts/feeds install -a
+          # refresh_config() above reran make oldconfig; CONFIG_CCACHE is the one
+          # symbol whose silent disappearance costs a whole build's worth of time.
+          if ! grep -q '^CONFIG_CCACHE=y' .config; then
+            echo "::error::feeds install dropped CONFIG_CCACHE=y"
+            grep -E '^CONFIG_(DEVEL|CCACHE)' .config || echo '  (no DEVEL/CCACHE symbols in .config)'
+            exit 1
+          fi
+          grep -E '^CONFIG_(DEVEL|CCACHE)=' .config
+
       - name: Restore toolchain cache
         id: toolchain
         uses: actions/cache/restore@v4
@@ -228,16 +246,6 @@ jobs:
           key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('package/**', 'target/linux/**', 'config/**', 'include/**', 'rules.mk', '.config') }}
           restore-keys: |
             packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
-
-      - name: Update and install feeds
-        run: |
-          if [ "${{ steps.feeds.outputs.cache-hit }}" != "true" ]; then
-            echo "Feeds cache miss, updating from remote..."
-            ./scripts/feeds update -a
-          else
-            echo "Feeds cache hit, skipping update."
-          fi
-          ./scripts/feeds install -a
 
       - name: Touch cached toolchain files
         if: steps.toolchain.outputs.cache-hit == 'true'
