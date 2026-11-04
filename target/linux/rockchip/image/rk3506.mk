@@ -47,6 +47,8 @@ define Device/hzhy_mini_evm_emmc
     urandom-seed
   KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
+  # MMC/SD style target: squashfs only, no UBIFS variant (see NAND devices)
+  FILESYSTEMS := squashfs
 endef
 TARGET_DEVICES += hzhy_mini_evm_emmc
 
@@ -60,18 +62,63 @@ define Device/hzhy_mini_evm_nand
     kmod-mtd-rw urandom-seed
   KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
+  # SPI-NAND target: never an MMC-style disk image. The kernel is stored raw in
+  # the "boot" MTD partition and the rootfs lives in a UBI volume on the
+  # "rootfs" partition (see the NAND DTS partition table). Two artifacts are
+  # produced, to be written from a TF-card-booted Linux:
+  #   flash_erase /dev/mtd3 0 0 && nandwrite -p /dev/mtd3 <img>-ubifs-kernel.bin
+  #   ubiformat /dev/mtd4 -f <img>-ubifs-rootfs.ubi
+  FILESYSTEMS := ubifs
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  # 182.5 MiB rootfs partition = 1392 PEBs; allow for the bad-block reserve
+  MKUBIFS_OPTS := -c 1350
+  IMAGES := kernel.bin rootfs.ubi
+  IMAGE/kernel.bin = append-kernel
+  IMAGE/rootfs.ubi = append-ubi
 endef
 TARGET_DEVICES += hzhy_mini_evm_nand
+
+define Device/hzhy_mini_evm_nand256
+  $(Device/rk3506)
+  DEVICE_VENDOR := HZHY
+  DEVICE_MODEL := RK3506SP MiniEVM (NAND 256MiB)
+  DEVICE_DTS := rockchip/HZ-RK3506SP_MiniEVM_NAND256
+  DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
+    kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
+    kmod-mtd-rw urandom-seed
+  KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  BOOT_SCRIPT := rk3506
+  # See the NAND device above; same idea, sized for the 256 MiB layout
+  #   mtd3 "boot"   -> <img>-ubifs-kernel.bin
+  #   mtd4 "rootfs" -> <img>-ubifs-rootfs.ubi
+  FILESYSTEMS := ubifs
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  VID_HDR_OFFSET := 2048
+  # 230.75 MiB rootfs partition = 1846 PEBs; allow for the bad-block reserve
+  MKUBIFS_OPTS := -c 1800
+  IMAGES := kernel.bin rootfs.ubi
+  IMAGE/kernel.bin = append-kernel
+  IMAGE/rootfs.ubi = append-ubi
+endef
+TARGET_DEVICES += hzhy_mini_evm_nand256
 
 define Device/hzhy_mini_evm_sd
   $(Device/rk3506)
   DEVICE_VENDOR := HZHY
-  DEVICE_MODEL := RK3506SP MiniEVM (SD)
+  DEVICE_MODEL := RK3506SP MiniEVM (SD/TF card)
   DEVICE_DTS := rockchip/HZ-RK3506SP_MiniEVM_SD
   DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
     kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
-    urandom-seed
+    kmod-fs-ext4 kmod-fs-vfat kmod-mmc urandom-seed
   KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
+  # TF/eMMC image: bootloader at sector 64/0x4000, then boot + rootfs.
+  # Written to SD with: dd if=...-sd.img of=/dev/sdX bs=4M conv=fsync
+  FILESYSTEMS := squashfs
+  IMAGES := sdcard.img.gz sysupgrade.img.gz
+  IMAGE/sdcard.img.gz = boot-common | boot-script rk3506 | rk3506-img | gzip
 endef
 TARGET_DEVICES += hzhy_mini_evm_sd

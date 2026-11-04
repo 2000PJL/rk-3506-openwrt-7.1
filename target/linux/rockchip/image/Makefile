@@ -5,6 +5,15 @@ include $(INCLUDE_DIR)/image.mk
 
 DEVICE_VARS += UBOOT_DEVICE_NAME
 
+# SPI-NAND geometry for the boards in this target (W25N04KV / HIKSEMI
+# HSESYHDSW2G): 128 KiB erase block, 2048-byte page. UBI therefore has
+#   PEB = 131072 bytes, LEB = 131072 - 2*2048 = 126976 bytes (124 KiB)
+# matching what the vendor firmware reports:
+#   ubi0: PEB size: 131072 bytes (128 KiB), LEB size: 126976 bytes (124 KiB)
+#   ubi0: VID header offset: 2048, data offset: 4096
+# The value also gates building $(KDIR)/root.ubifs (see include/image.mk).
+UBIFS_OPTS = -m 2048 -e 124KiB -c 2048
+
 define Build/Compile
 	$(CP) $(LINUX_DIR)/COPYING $(KDIR)/COPYING.linux
 endef
@@ -12,7 +21,8 @@ endef
 define Image/Prepare
 	# Copy HZ DTB from KDIR (OpenWrt DTC output) to kernel DTS tree (for mkimage FIT)
 	# Runs after compile-dtb (via image_prepare: compile compile-dtb)
-	for f in HZ-RK3506SP_MiniEVM_EMMC HZ-RK3506SP_MiniEVM_NAND HZ-RK3506SP_MiniEVM_SD; do \
+	for f in HZ-RK3506SP_MiniEVM_EMMC HZ-RK3506SP_MiniEVM_NAND \
+		HZ-RK3506SP_MiniEVM_NAND256 HZ-RK3506SP_MiniEVM_SD; do \
 		if [ -f "$(KDIR)/image-$$$$f.dtb" ]; then \
 			$(CP) "$(KDIR)/image-$$$$f.dtb" "$(DTS_DIR)/rockchip/$$$$f.dtb"; \
 		fi; \
