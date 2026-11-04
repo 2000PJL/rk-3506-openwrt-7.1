@@ -1,0 +1,470 @@
+#
+# OpenWrt CI for RK3506-MiniEVM
+#
+name: OpenWrt-CI for RK3506-MiniEVM
+
+on:
+  schedule:
+    - cron: 0 20 * * 1,4
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: RK3506-MiniEVM
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  check:
+    name: Check if build needed
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      commitHash: ${{ steps.getHash.outputs.commitHash }}
+    steps:
+      - name: Get latest commit hash
+        id: getHash
+        run: |
+          COMMIT_HASH=$(git ls-remote ${{ github.server_url }}/${{ github.repository }} refs/heads/${{ github.ref_name }} | cut -f1)
+          echo "commitHash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "Latest commit: $COMMIT_HASH"
+
+      - name: Check if already built
+        id: cacheHash
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/cache/restore@v4
+        with:
+          path: .commitHash
+          key: built-${{ steps.getHash.outputs.commitHash }}
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger, always build."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cacheHash.outputs.cache-hit }}" = "true" ]; then
+            echo "Commit ${{ steps.getHash.outputs.commitHash }} was already built. Skipping."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New commit detected, build needed."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build_openwrt:
+    name: Build OpenWrt Firmware for RK3506-MiniEVM
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      DEVICE_TARGET: rockchip
+      DEVICE_SUBTARGET: rk3506
+
+    steps:
+      - name: Checkout OpenWrt
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Get Source Info
+        run: |
+          echo "SOURCE_REPO=${{ github.repository }}" >> $GITHUB_ENV
+          COMMIT_AUTHOR=$(git log -1 --format="作者: %an <%ae>" 2>/dev/null || echo "作者: unknown")
+          echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
+          COMMIT_DATE=$(git log -1 --format="时间: %ci" 2>/dev/null || echo "时间: unknown")
+          echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
+          COMMIT_MESSAGE=$(git log -1 --format="内容: %s" 2>/dev/null || echo "内容: unknown")
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
+          COMMIT_HASH=$(git log -1 --format="hash: %H" 2>/dev/null || echo "hash: unknown")
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+          COMMIT_SHORT_HASH=$(git log -1 --format="%h" 2>/dev/null || echo "unknown")
+          echo "COMMIT_SHORT_HASH=$COMMIT_SHORT_HASH" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+          echo "BUILD_DATE_TAG=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          echo "FILE_DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+      - name: Check Server Performance
+        run: |
+          echo "警告⚠"
+          echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+          echo -e "已知CPU型号(降序): 7763，8370C，8272CL，8171M，E5-2673\n"
+          echo "--------------------------CPU信息--------------------------"
+          echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+          echo "CPU核心数量: $(nproc)"
+          echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
+          echo "--------------------------内存信息--------------------------"
+          echo "已安装内存详细信息:"
+          echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
+          echo "--------------------------硬盘信息--------------------------"
+          echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+      - name: Space cleanup and Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          docker image prune -f
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+          sudo apt-mark hold grub-efi-amd64-signed
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y --ignore-missing purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* snap* || true
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          sudo systemctl daemon-reload
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y autoremove --purge
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y clean
+          sudo timedatectl set-timezone "$TZ"
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Get Device Info
+        run: |
+          if [ -f config/hz-sp-rk3506-MiniEVM_defconfig ]; then
+            cp config/hz-sp-rk3506-MiniEVM_defconfig .config
+          else
+            echo "Warning: config/hz-sp-rk3506-MiniEVM_defconfig not found, using default"
+          fi
+          # Enable ccache in the config before running defconfig
+          if [ -f .config ]; then
+            # Enable ccache support in OpenWrt build system
+            echo "CONFIG_CCACHE=y" >> .config
+            echo "CONFIG_CCACHE_DIR=\"$(pwd)/.ccache\"" >> .config
+            echo "CONFIG_CCACHE_SIZE=\"2G\"" >> .config
+          fi
+          make defconfig 2>/dev/null
+          DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rockchip")
+          DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rk3506")
+          echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+          echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+      - name: Setup CCache
+        run: |
+          sudo apt-get install -y ccache
+          mkdir -p .ccache
+          cat > .ccache/ccache.conf << EOF
+          max_size = 5.0G
+          base_dir = $GITHUB_WORKSPACE
+          cache_dir_levels = 2
+          compression = true
+          compression_level = 9
+          sloppiness = file_stat_matches,include_file_mtime,include_file_ctime,pch_defines,time_macros,file_macro
+          hash_dir = false
+          temporary_dir = /tmp/ccache-temp
+          EOF
+          sed -i 's/^[[:space:]]*//' .ccache/ccache.conf
+          export CCACHE_DIR=$PWD/.ccache
+          export PATH="/usr/lib/ccache:$PATH"
+          echo "CCACHE_DIR=$PWD/.ccache" >> $GITHUB_ENV
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+          ccache -s
+        shell: bash
+
+      - name: Prepare CCache Symlink
+        run: |
+          mkdir -p build_dir
+          ln -sf $PWD/.ccache build_dir/ccache
+
+          # Ensure staging_dir has proper ccache link too
+          mkdir -p staging_dir/toolchain-*/bin
+          ln -sf $(which ccache) staging_dir/toolchain-*/bin/ccache 2>/dev/null || true
+
+      - name: Restore feeds cache
+        id: feeds
+        uses: actions/cache/restore@v4
+        with:
+          path: feeds
+          key: feeds-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            feeds-
+
+      - name: Restore toolchain cache
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            dl
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Restore tools cache
+        id: tools
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build_dir/host*
+            staging_dir/host*
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Restore packages cache
+        id: packages
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            staging_dir/target-*
+            build_dir/aarch64_generic
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Update and install feeds
+        run: |
+          if [ "${{ steps.feeds.outputs.cache-hit }}" != "true" ]; then
+            echo "Feeds cache miss, updating from remote..."
+            ./scripts/feeds update -a
+          else
+            echo "Feeds cache hit, skipping update."
+          fi
+          ./scripts/feeds install -a
+
+      - name: Touch cached toolchain files
+        if: steps.toolchain.outputs.cache-hit == 'true'
+        run: |
+          echo "Updating timestamps for cached toolchain files..."
+          find build_dir/toolchain-* staging_dir/toolchain-* dl -type f -exec touch {} + 2>/dev/null || true
+
+      - name: Touch cached tools files
+        if: steps.tools.outputs.cache-hit == 'true'
+        run: |
+          echo "Updating timestamps for cached tools files..."
+          find build_dir/host* staging_dir/host* -type f -exec touch {} + 2>/dev/null || true
+
+      - name: Touch cached packages files
+        if: steps.packages.outputs.cache-hit == 'true'
+        run: |
+          echo "Updating timestamps for cached packages files..."
+          find staging_dir/target-* build_dir/aarch64_generic -type f -exec touch {} + 2>/dev/null || true
+
+      - name: Download packages
+        run: make download -j16
+
+      - name: Compile firmware
+        id: compile
+        run: |
+          set -o pipefail
+          export CCACHE_DIR=$PWD/.ccache
+          export PATH="/usr/lib/ccache:$PATH"
+          echo "=== CCache Statistics (Before Build) ==="
+          ccache -s
+          echo "=== Cache Directory Size ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+          echo "================================"
+          echo "Starting compilation with $(nproc) threads"
+          echo "================================"
+          if ! make -j$(($(nproc) + 2)) 2>&1 | tee /tmp/build-main.log; then
+            echo "================================"
+            echo "Build failed!"
+            echo "================================"
+            # Identify the failing package so it can be re-run verbosely.
+            pkg=$(grep -o 'ERROR: package/[^ ]* failed to build' /tmp/build-main.log | head -1 | sed 's|ERROR: package/||; s| failed to build||')
+            echo "Failing package: ${pkg:-unknown}"
+            # The kernel make runs with V='' unless OPENWRT_VERBOSE contains 'c',
+            # so both its normal output and the reason it failed are suppressed.
+            # Re-run the failing package with V=s to surface the real error.
+            if [ -n "$pkg" ]; then
+              echo "================================"
+              echo "=== Verbose re-run: package/${pkg} ==="
+              echo "================================"
+              make package/${pkg}/compile V=s 2>&1 | tee /tmp/pkg-verbose.log | tail -150
+              echo "================================"
+              echo "=== Last 80 lines of package re-run ==="
+              tail -80 /tmp/pkg-verbose.log || true
+            fi
+            echo "================================"
+            echo "=== Full re-run with -j1 V=s (cross-check) ==="
+            echo "================================"
+            make package/install -j1 V=s 2>&1 | tee /tmp/build-verbose.log | tail -100
+            echo "================================"
+            echo "=== Searching for errors in verbose log ==="
+            # Broaden beyond the opkg/rootfs patterns: a kernel or C compile
+            # failure (e.g. "error:", "make[N]: ***", "undefined reference")
+            # would otherwise be swallowed by the parallel build's output.
+            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
+            echo "================================"
+            echo "=== Last 60 lines of -j1 verbose log (error context) ==="
+            tail -60 /tmp/build-verbose.log || true
+            echo "================================"
+            exit 1
+          fi
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "================================"
+          echo "CCache Statistics (After Build)"
+          echo "================================"
+          ccache -s
+          echo "=== Final Cache Directory Size ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+
+      - name: Save built commit hash
+        if: steps.compile.outputs.status == 'success'
+        run: echo "${{ needs.check.outputs.commitHash }}" > .commitHash
+
+      - name: Save built commit hash cache
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .commitHash
+          key: built-${{ needs.check.outputs.commitHash }}
+
+      - name: Save feeds cache
+        if: always() && steps.feeds.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: feeds
+          key: feeds-${{ hashFiles('feeds.conf.default') }}
+
+      - name: Save toolchain cache
+        if: always() && steps.toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            dl
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Save tools cache
+        if: always() && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build_dir/host*
+            staging_dir/host*
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Save packages cache
+        if: always() && steps.packages.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            staging_dir/target-*
+            build_dir/aarch64_generic
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Verify firmware metadata
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          echo "=== Verifying firmware metadata ==="
+          for img in $(find ./bin/targets/ -name "*.img.gz" 2>/dev/null); do
+            echo "Checking: $img"
+            if fwtool -q -i /dev/null "$img" 2>/dev/null; then
+              echo "  -> Metadata: OK"
+            else
+              echo "  -> Metadata: MISSING!"
+              echo "WARNING: $img does not contain firmware metadata"
+            fi
+          done
+
+      - name: Check disk usage
+        run: |
+          echo "=== Disk usage after build ==="
+          du -sh build_dir .ccache bin/ 2>/dev/null || true
+          df -h /
+
+      - name: Prepare artifact
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          mkdir -p ./artifact/package
+          mkdir -p ./artifact/buildinfo
+          rm -rf $(find ./bin/targets/ -type d -name "packages") 2>/dev/null || true
+          cp -rf $(find ./bin/packages/ -type f -name "*.ipk" 2>/dev/null) ./artifact/package/ 2>/dev/null || true
+          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest" 2>/dev/null) ./artifact/buildinfo/ 2>/dev/null || true
+          FIRMWARE_PATH=$(find ./bin/targets/ -type d -name "packages" -prune -o -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" \) 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo "./bin/targets/")
+          echo "FIRMWARE_PATH=$FIRMWARE_PATH" >> $GITHUB_ENV
+          echo "=== Firmware files ==="
+          find ./bin/targets/ -type f \( -name "*.img*" -o -name "*.bin" -o -name "*.gz" \) 2>/dev/null | sort || echo "No firmware found"
+          MANIFEST_FILE=$(find ./bin/targets/ -name "*.manifest" | head -1)
+          if [ -f "$MANIFEST_FILE" ]; then
+            FULL_KERNEL_VERSION=$(grep "^kernel " "$MANIFEST_FILE" | cut -d'-' -f2 | tr -d ' ')
+            KERNEL_VERSION=$(echo "$FULL_KERNEL_VERSION" | sed 's/~.*//')
+            if [ ! -z "$KERNEL_VERSION" ]; then
+              echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Upload buildinfo
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_buildinfo_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/buildinfo/
+
+      - name: Upload package
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_package_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/package/
+
+      - name: Upload firmware
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_firmware_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./bin/targets/
+
+      - name: Create GitHub Release
+        if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ env.FIRMWARE_TAG }} ${{ env.COMMIT_SHORT_HASH }}
+          allowUpdates: true
+          tag: ${{ env.FIRMWARE_TAG }}-${{ env.COMMIT_SHORT_HASH }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: ${{ env.FIRMWARE_PATH }}/*
+          body: |
+            ## 🎉 OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}
+
+            ### 📒 固件信息
+            - 💻 平台架构: ${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+            - 🚀 内核版本: ${{ env.KERNEL_VERSION }}
+            - 🌐 默认地址: 192.168.1.1
+            - 🔑 默认密码: admin或无密码
+            - 📅 构建时间: ${{ env.BUILD_DATE }}
+
+            ### 📝 源码信息
+            - 📦 源码仓库: ${{ env.SOURCE_REPO }}
+            - ${{ env.COMMIT_AUTHOR }}
+            - ${{ env.COMMIT_DATE }}
+            - ${{ env.COMMIT_MESSAGE }}
+            - `${{ env.COMMIT_HASH }}`
+
+            ### 📦 固件下载说明
+            - 根据设备型号选择对应的固件文件
+            - 使用 sysupgrade 格式保留配置升级
+            - 首次刷机请使用 initramfs 或 SD卡 镜像
+
+            ### ⚠️ 注意事项
+            - 首次使用请修改密码
+            - 请勿跨版本保留配置刷机
+            - 刷机前请备份重要数据
