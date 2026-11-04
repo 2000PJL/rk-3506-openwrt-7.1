@@ -84,6 +84,15 @@ jobs:
           echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
           COMMIT_SHORT_HASH=$(git log -1 --format="%h" 2>/dev/null || echo "unknown")
           echo "COMMIT_SHORT_HASH=$COMMIT_SHORT_HASH" >> $GITHUB_ENV
+          # Version stamp is derived from the *commit* timestamp, not the build clock,
+          # so it sorts correctly and a rebuild of the same commit yields the same version.
+          COMMIT_TS=$(git log -1 --format=%ct 2>/dev/null || echo "")
+          [ -n "$COMMIT_TS" ] || COMMIT_TS=$(date +%s)
+          BUILD_STAMP=$(date -u -d "@$COMMIT_TS" +%Y%m%d.%H%M%S)
+          echo "BUILD_STAMP=$BUILD_STAMP" >> $GITHUB_ENV
+          echo "IMAGE_VERSION=${BUILD_STAMP}-${COMMIT_SHORT_HASH}" >> $GITHUB_ENV
+          # Reproducible timestamps for images/partition GUIDs and packaged files.
+          echo "SOURCE_DATE_EPOCH=$COMMIT_TS" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
           echo "BUILD_DATE_TAG=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
           echo "FILE_DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
@@ -282,6 +291,11 @@ jobs:
           echo "================================"
           echo "Starting compilation with $(nproc) threads"
           echo "================================"
+          # scripts/getver.sh:try_version() reads TOPDIR/version first, so this file
+          # becomes REVISION -> /etc/openwrt_release and *.buildinfo on the device.
+          echo "$IMAGE_VERSION" > version
+          echo "REVISION for this build: $(cat version)"
+          echo "SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-unset}"
           if ! make -j$(($(nproc) + 2)) 2>&1 | tee /tmp/build-main.log; then
             echo "================================"
             echo "Build failed!"
@@ -408,6 +422,24 @@ jobs:
           cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest" 2>/dev/null) ./artifact/buildinfo/ 2>/dev/null || true
           FIRMWARE_PATH=$(find ./bin/targets/ -type d -name "packages" -prune -o -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" \) 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo "./bin/targets/")
           echo "FIRMWARE_PATH=$FIRMWARE_PATH" >> $GITHUB_ENV
+          # The image Makefile has no version in the file names (this tree does not
+          # define CONFIG_VERSION_FILENAMES), so prefix them here to keep downloads sortable.
+          echo "=== Stamping firmware filenames with ${IMAGE_VERSION} ==="
+          for f in "$FIRMWARE_PATH"/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            case "$base" in
+              sha256sums|*.manifest|*.buildinfo|config.seed) continue ;;
+              "${IMAGE_VERSION}_"*) continue ;;
+            esac
+            mv -f "$f" "$FIRMWARE_PATH/${IMAGE_VERSION}_${base}"
+            echo "  $base -> ${IMAGE_VERSION}_${base}"
+          done
+          if [ -f "$FIRMWARE_PATH/sha256sums" ]; then
+            (cd "$FIRMWARE_PATH" && rm -f sha256sums && find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs -r sha256sum > sha256sums) || true
+            echo "=== sha256sums (regenerated) ==="
+            cat "$FIRMWARE_PATH/sha256sums" || true
+          fi
           echo "=== Firmware files ==="
           find ./bin/targets/ -type f \( -name "*.img*" -o -name "*.bin" -o -name "*.gz" \) 2>/dev/null | sort || echo "No firmware found"
           MANIFEST_FILE=$(find ./bin/targets/ -name "*.manifest" | head -1)
@@ -423,30 +455,30 @@ jobs:
         if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_buildinfo_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          name: OpenWrt_buildinfo_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
           path: ./artifact/buildinfo/
 
       - name: Upload package
         if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_package_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          name: OpenWrt_package_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
           path: ./artifact/package/
 
       - name: Upload firmware
         if: steps.compile.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_firmware_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.COMMIT_SHORT_HASH }}
+          name: OpenWrt_firmware_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
           path: ./bin/targets/
 
       - name: Create GitHub Release
         if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
         uses: ncipollo/release-action@v1
         with:
-          name: ${{ env.FIRMWARE_TAG }} ${{ env.COMMIT_SHORT_HASH }}
+          name: ${{ env.FIRMWARE_TAG }} ${{ env.BUILD_STAMP }} (${{ env.COMMIT_SHORT_HASH }})
           allowUpdates: true
-          tag: ${{ env.FIRMWARE_TAG }}-${{ env.COMMIT_SHORT_HASH }}
+          tag: ${{ env.FIRMWARE_TAG }}-${{ env.BUILD_STAMP }}-${{ env.COMMIT_SHORT_HASH }}
           token: ${{ secrets.GITHUB_TOKEN }}
           artifacts: ${{ env.FIRMWARE_PATH }}/*
           body: |
@@ -454,6 +486,7 @@ jobs:
 
             ### 📒 固件信息
             - 💻 平台架构: ${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+            - 🏷️ 固件版本: ${{ env.IMAGE_VERSION }}（等于提交时间的 UTC 时间戳 + 短 hash，可排序）
             - 🚀 内核版本: ${{ env.KERNEL_VERSION }}
             - 🌐 默认地址: 192.168.1.1
             - 🔑 默认密码: admin或无密码
