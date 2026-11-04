@@ -35,6 +35,7 @@ endif
 else
   PKG_SOURCE:=$(LINUX_SOURCE)
   PKG_SOURCE_URL:=$(LINUX_SITE)
+  PKG_SOURCE_URL_FILE:=$(LINUX_SOURCE_URL_FILE)
 endif
 HOST_BUILD_DIR:=$(KERNEL_BUILD_DIR)/linux-$(LINUX_VERSION)
 PKG_HASH:=$(LINUX_KERNEL_HASH)
@@ -60,6 +61,10 @@ HOST_KMAKE := $(MAKE) -C $(HOST_BUILD_DIR) \
 
 define Host/Configure/all
 	mkdir -p $(BUILD_DIR_TOOLCHAIN)/linux-dev
+	# Fix headers_install race condition on Linux 7.1:
+	# 1. First build version.h (creates include/generated/uapi/linux/ dir)
+	# 2. Then run headers_install (parallel, but dir already exists)
+	$(HOST_KMAKE) include/generated/uapi/linux/version.h
 	$(HOST_KMAKE) \
 		INSTALL_HDR_PATH="$(BUILD_DIR_TOOLCHAIN)/linux-dev/" \
 		headers_install
