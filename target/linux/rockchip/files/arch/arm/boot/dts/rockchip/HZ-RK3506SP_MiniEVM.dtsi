@@ -297,7 +297,12 @@
 	status = "okay";
 };
 
+/* stmmac only registers an MDIO bus for a child node that carries
+ * "snps,dwmac-mdio" (see stmmac_of_get_mdio): rk3506.dtsi's mdio1 has no
+ * compatible, so phy-handle had no bus to resolve against and the attach
+ * failed with -ENODEV while the bus itself never appeared in the device list. */
 &mdio1 {
+	compatible = "snps,dwmac-mdio";
 	rmii_phy1: phy@1 {
 		compatible = "ethernet-phy-ieee802.3-c22";
 		reg = <0x1>;
