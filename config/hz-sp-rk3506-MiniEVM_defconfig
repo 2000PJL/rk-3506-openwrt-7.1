@@ -497,3 +497,12 @@ CONFIG_boost-variant-release=y
 #
 CONFIG_DEVEL=y
 CONFIG_CCACHE=y
+#
+# Stamp names decide what a reused build dir is worth: without AUTOREMOVE the
+# .prepared_<hash> name embeds the source files' mtimes (find_md5 in
+# include/depends.mk uses -printf "%p%T@"), so a fresh checkout renames it, the
+# build dir is dropped and every package rebuilds no matter how good the cache
+# hit was. AUTOREMOVE switches it to find_md5_reproducible (content hash), which
+# lets an unchanged package be skipped outright.
+#
+CONFIG_AUTOREMOVE=y

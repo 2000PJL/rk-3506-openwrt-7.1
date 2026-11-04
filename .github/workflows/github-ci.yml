@@ -7,6 +7,18 @@ on:
   schedule:
     - cron: 0 20 * * 1,4
   workflow_dispatch:
+    inputs:
+      cache_generation:
+        description: >-
+          Cache key generation. Keep 1 for normal builds. Bump it (2, 3, ...) to re-snapshot
+          every category: the previous entries are still restored through restore-keys, so the
+          run starts warm and writes fresh entries under the new key. Use this to refresh the
+          ccache snapshot (an exact-hit cache is never re-saved) or to re-bake an entry after
+          changing a cache key. For a genuinely cold build, delete the entries under
+          Actions -> Caches instead.
+        required: false
+        default: '1'
+        type: string
 
 permissions:
   contents: write
@@ -64,6 +76,9 @@ jobs:
     env:
       DEVICE_TARGET: rockchip
       DEVICE_SUBTARGET: rk3506
+      # Empty for scheduled runs, so the expression falls back to generation 1 and the
+      # keys stay byte-identical to the ones a plain dispatch produces.
+      CACHE_GEN: ${{ github.event.inputs.cache_generation || '1' }}
 
     steps:
       - name: Checkout OpenWrt
@@ -147,15 +162,18 @@ jobs:
             USE_SEED=
           fi
           make defconfig 2>/dev/null
-          # CONFIG_CCACHE is what makes rules.mk prefix ccache onto TARGET_CC/HOSTCC,
-          # and it is only visible when CONFIG_DEVEL=y. Both now come from the seed
-          # defconfig. Assert it survived: a silently dropped symbol costs build time
-          # and nothing else, which is exactly how this went unnoticed.
-          if [ -n "$USE_SEED" ] && ! grep -q '^CONFIG_CCACHE=y' .config; then
-            echo "::error::CONFIG_CCACHE=y is not in .config - OpenWrt would build without ccache"
-            grep -E '^CONFIG_(DEVEL|CCACHE)' .config || echo '  (no DEVEL/CCACHE symbols in .config)'
-            exit 1
-          fi
+          # CONFIG_CCACHE is what makes rules.mk prefix ccache onto TARGET_CC/HOSTCC and
+          # CONFIG_AUTOREMOVE is what makes .prepared_* stamp names content-based; both are
+          # only visible when CONFIG_DEVEL=y, and all three now come from the seed defconfig.
+          # Assert they survived: a silently dropped symbol costs build time and nothing else,
+          # which is exactly how the ccache one went unnoticed.
+          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE; do
+            if [ -n "$USE_SEED" ] && ! grep -q "^${sym}=y" .config; then
+              echo "::error::${sym}=y is not in .config - OpenWrt loses ccache or warm-rebuild support"
+              grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)' .config || echo '  (none of them in .config)'
+              exit 1
+            fi
+          done
           DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rockchip")
           DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rk3506")
           echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
@@ -165,12 +183,15 @@ jobs:
         run: sudo apt-get install -y ccache
         shell: bash
 
+      # A key must hash only files the build never rewrites, or the save step computes a
+      # different key than the restore step did and the entry can never be hit exactly.
+      # That is why no key below contains .config: `feeds install` regenerates it.
       - name: Restore feeds cache
         id: feeds
         uses: actions/cache/restore@v4
         with:
           path: feeds
-          key: feeds-${{ hashFiles('feeds.conf.default') }}
+          key: feeds-${{ env.CACHE_GEN }}-${{ hashFiles('feeds.conf.default') }}
           restore-keys: |
             feeds-
 
@@ -183,14 +204,16 @@ jobs:
             echo "Feeds cache hit, skipping update."
           fi
           ./scripts/feeds install -a
-          # refresh_config() above reran make oldconfig; CONFIG_CCACHE is the one
-          # symbol whose silent disappearance costs a whole build's worth of time.
-          if ! grep -q '^CONFIG_CCACHE=y' .config; then
-            echo "::error::feeds install dropped CONFIG_CCACHE=y"
-            grep -E '^CONFIG_(DEVEL|CCACHE)' .config || echo '  (no DEVEL/CCACHE symbols in .config)'
-            exit 1
-          fi
-          grep -E '^CONFIG_(DEVEL|CCACHE)=' .config
+          # refresh_config() above reran make oldconfig; these are the symbols whose silent
+          # disappearance costs a whole build's worth of time.
+          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE; do
+            if ! grep -q "^${sym}=y" .config; then
+              echo "::error::feeds install dropped ${sym}=y"
+              grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)' .config || echo '  (none of them in .config)'
+              exit 1
+            fi
+          done
+          grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)=' .config
 
       - name: Restore toolchain cache
         id: toolchain
@@ -200,7 +223,7 @@ jobs:
             dl
             build_dir/toolchain-*
             staging_dir/toolchain-*
-          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'rules.mk', 'feeds.conf.default', '.config') }}
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'config/hz-sp-rk3506-MiniEVM_defconfig', 'rules.mk', 'feeds.conf.default') }}
           restore-keys: |
             toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -211,7 +234,7 @@ jobs:
           path: |
             build_dir/host*
             staging_dir/host*
-          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', '.config') }}
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', 'config/hz-sp-rk3506-MiniEVM_defconfig') }}
           restore-keys: |
             tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -220,7 +243,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
           restore-keys: |
             ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -252,27 +275,29 @@ jobs:
           path: |
             staging_dir/target-*
             build_dir/target-*
-          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('package/**', 'target/linux/**', 'config/**', 'include/**', 'rules.mk', '.config') }}
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
           restore-keys: |
             packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
-      - name: Touch cached toolchain files
-        if: steps.toolchain.outputs.cache-hit == 'true'
+      # Re-date every restored build tree to "now": without it, every restored stamp is older
+      # than the fresh checkout and make rebuilds the world even when restore-keys brought the
+      # content back. This cannot ship stale output, because the rebuild decision never relies
+      # on mtime alone: the stamp *file name* carries a source fingerprint
+      # (include/package.mk:114, include/kernel-build.mk:13 - hashed over paths and mtimes, so a
+      # new checkout is always looked up under a name the restored tree has never seen), and the
+      # dtb, kernel .configured/.image and FIT rules are FORCE'd
+      # (include/image.mk:668, include/kernel-build.mk:129,144).
+      - name: Repair timestamps of restored build trees
         run: |
-          echo "Updating timestamps for cached toolchain files..."
-          find build_dir/toolchain-* staging_dir/toolchain-* dl -type f -exec touch {} + 2>/dev/null || true
-
-      - name: Touch cached tools files
-        if: steps.tools.outputs.cache-hit == 'true'
-        run: |
-          echo "Updating timestamps for cached tools files..."
-          find build_dir/host* staging_dir/host* -type f -exec touch {} + 2>/dev/null || true
-
-      - name: Touch cached packages files
-        if: steps.packages.outputs.cache-hit == 'true'
-        run: |
-          echo "Updating timestamps for cached packages files..."
-          find staging_dir/target-* build_dir/target-* -type f -exec touch {} + 2>/dev/null || true
+          echo "Re-dating restored build trees..."
+          for d in dl build_dir/toolchain-* staging_dir/toolchain-* \
+                   build_dir/host* staging_dir/host* \
+                   staging_dir/target-* build_dir/target-*; do
+            find "$d" -type f -exec touch {} + 2>/dev/null || true
+          done
+          echo "=== restored tree sizes after re-dating ==="
+          du -sh build_dir staging_dir dl 2>/dev/null || true
+          date '+re-dated at %H:%M:%S'
 
       - name: Download packages
         run: make download -j16
@@ -355,7 +380,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: feeds
-          key: feeds-${{ hashFiles('feeds.conf.default') }}
+          key: feeds-${{ env.CACHE_GEN }}-${{ hashFiles('feeds.conf.default') }}
 
       - name: Save toolchain cache
         if: always() && steps.toolchain.outputs.cache-hit != 'true'
@@ -365,7 +390,7 @@ jobs:
             dl
             build_dir/toolchain-*
             staging_dir/toolchain-*
-          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'rules.mk', 'feeds.conf.default', '.config') }}
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'config/hz-sp-rk3506-MiniEVM_defconfig', 'rules.mk', 'feeds.conf.default') }}
 
       - name: Save tools cache
         if: always() && steps.tools.outputs.cache-hit != 'true'
@@ -374,14 +399,14 @@ jobs:
           path: |
             build_dir/host*
             staging_dir/host*
-          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', '.config') }}
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', 'config/hz-sp-rk3506-MiniEVM_defconfig') }}
 
       - name: Save ccache
         if: always() && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
 
       - name: Save packages cache
         if: always() && steps.packages.outputs.cache-hit != 'true'
@@ -390,7 +415,7 @@ jobs:
           path: |
             staging_dir/target-*
             build_dir/target-*
-          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('package/**', 'target/linux/**', 'config/**', 'include/**', 'rules.mk', '.config') }}
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
 
       - name: Verify firmware metadata
         if: steps.compile.outputs.status == 'success'
