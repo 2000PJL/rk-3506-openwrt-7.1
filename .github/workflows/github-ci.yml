@@ -132,52 +132,29 @@ jobs:
         run: |
           if [ -f config/hz-sp-rk3506-MiniEVM_defconfig ]; then
             cp config/hz-sp-rk3506-MiniEVM_defconfig .config
+            USE_SEED=yes
           else
             echo "Warning: config/hz-sp-rk3506-MiniEVM_defconfig not found, using default"
-          fi
-          # Enable ccache in the config before running defconfig
-          if [ -f .config ]; then
-            # Enable ccache support in OpenWrt build system
-            echo "CONFIG_CCACHE=y" >> .config
-            echo "CONFIG_CCACHE_DIR=\"$(pwd)/.ccache\"" >> .config
-            echo "CONFIG_CCACHE_SIZE=\"2G\"" >> .config
+            USE_SEED=
           fi
           make defconfig 2>/dev/null
+          # CONFIG_CCACHE is what makes rules.mk prefix ccache onto TARGET_CC/HOSTCC,
+          # and it is only visible when CONFIG_DEVEL=y. Both now come from the seed
+          # defconfig. Assert it survived: a silently dropped symbol costs build time
+          # and nothing else, which is exactly how this went unnoticed.
+          if [ -n "$USE_SEED" ] && ! grep -q '^CONFIG_CCACHE=y' .config; then
+            echo "::error::CONFIG_CCACHE=y is not in .config - OpenWrt would build without ccache"
+            grep -E '^CONFIG_(DEVEL|CCACHE)' .config || echo '  (no DEVEL/CCACHE symbols in .config)'
+            exit 1
+          fi
           DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rockchip")
           DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rk3506")
           echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
           echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
 
-      - name: Setup CCache
-        run: |
-          sudo apt-get install -y ccache
-          mkdir -p .ccache
-          cat > .ccache/ccache.conf << EOF
-          max_size = 5.0G
-          base_dir = $GITHUB_WORKSPACE
-          cache_dir_levels = 2
-          compression = true
-          compression_level = 9
-          sloppiness = file_stat_matches,include_file_mtime,include_file_ctime,pch_defines,time_macros,file_macro
-          hash_dir = false
-          temporary_dir = /tmp/ccache-temp
-          EOF
-          sed -i 's/^[[:space:]]*//' .ccache/ccache.conf
-          export CCACHE_DIR=$PWD/.ccache
-          export PATH="/usr/lib/ccache:$PATH"
-          echo "CCACHE_DIR=$PWD/.ccache" >> $GITHUB_ENV
-          echo "/usr/lib/ccache" >> $GITHUB_PATH
-          ccache -s
+      - name: Install ccache
+        run: sudo apt-get install -y ccache
         shell: bash
-
-      - name: Prepare CCache Symlink
-        run: |
-          mkdir -p build_dir
-          ln -sf $PWD/.ccache build_dir/ccache
-
-          # Ensure staging_dir has proper ccache link too
-          mkdir -p staging_dir/toolchain-*/bin
-          ln -sf $(which ccache) staging_dir/toolchain-*/bin/ccache 2>/dev/null || true
 
       - name: Restore feeds cache
         id: feeds
@@ -196,7 +173,7 @@ jobs:
             dl
             build_dir/toolchain-*
             staging_dir/toolchain-*
-          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'rules.mk', 'feeds.conf.default', '.config') }}
           restore-keys: |
             toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -207,7 +184,7 @@ jobs:
           path: |
             build_dir/host*
             staging_dir/host*
-          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', '.config') }}
           restore-keys: |
             tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -220,14 +197,35 @@ jobs:
           restore-keys: |
             ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
+      - name: Configure ccache
+        run: |
+          mkdir -p .ccache
+          cat > .ccache/ccache.conf << EOF
+          max_size = 1.0G
+          base_dir = $GITHUB_WORKSPACE
+          cache_dir_levels = 2
+          compression = true
+          compression_level = 9
+          sloppiness = file_stat_matches,include_file_mtime,include_file_ctime,pch_defines,time_macros,file_macro
+          hash_dir = false
+          temporary_dir = /tmp/ccache-temp
+          EOF
+          sed -i 's/^[[:space:]]*//' .ccache/ccache.conf
+          # rules.mk exports CCACHE_DIR itself ($(TOPDIR)/.ccache); this only lines up the
+          # standalone ccache commands with the same directory.
+          echo "CCACHE_DIR=$PWD/.ccache" >> $GITHUB_ENV
+          echo "=== ccache directory right after restore ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+        shell: bash
+
       - name: Restore packages cache
         id: packages
         uses: actions/cache/restore@v4
         with:
           path: |
             staging_dir/target-*
-            build_dir/aarch64_generic
-          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+            build_dir/target-*
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('package/**', 'target/linux/**', 'config/**', 'include/**', 'rules.mk', '.config') }}
           restore-keys: |
             packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
 
@@ -257,7 +255,7 @@ jobs:
         if: steps.packages.outputs.cache-hit == 'true'
         run: |
           echo "Updating timestamps for cached packages files..."
-          find staging_dir/target-* build_dir/aarch64_generic -type f -exec touch {} + 2>/dev/null || true
+          find staging_dir/target-* build_dir/target-* -type f -exec touch {} + 2>/dev/null || true
 
       - name: Download packages
         run: make download -j16
@@ -267,11 +265,12 @@ jobs:
         run: |
           set -o pipefail
           export CCACHE_DIR=$PWD/.ccache
-          export PATH="/usr/lib/ccache:$PATH"
-          echo "=== CCache Statistics (Before Build) ==="
-          ccache -s
-          echo "=== Cache Directory Size ==="
+          echo "=== ccache directory size (before build) ==="
           du -sh .ccache 2>/dev/null || echo "0"
+          # Zero the counters: everything printed after the build then describes this
+          # run only, including the uncacheable reasons (linking is never cached).
+          echo "=== ccache counters up to now (then cleared) ==="
+          ccache -z
           echo "================================"
           echo "Starting compilation with $(nproc) threads"
           echo "================================"
@@ -312,9 +311,9 @@ jobs:
           fi
           echo "status=success" >> $GITHUB_OUTPUT
           echo "================================"
-          echo "CCache Statistics (After Build)"
+          echo "ccache statistics (this run only)"
           echo "================================"
-          ccache -s
+          ccache -s -v
           echo "=== Final Cache Directory Size ==="
           du -sh .ccache 2>/dev/null || echo "0"
 
@@ -344,7 +343,7 @@ jobs:
             dl
             build_dir/toolchain-*
             staging_dir/toolchain-*
-          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'rules.mk', 'feeds.conf.default', '.config') }}
 
       - name: Save tools cache
         if: always() && steps.tools.outputs.cache-hit != 'true'
@@ -353,10 +352,10 @@ jobs:
           path: |
             build_dir/host*
             staging_dir/host*
-          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', '.config') }}
 
       - name: Save ccache
-        if: always()
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .ccache
@@ -368,8 +367,8 @@ jobs:
         with:
           path: |
             staging_dir/target-*
-            build_dir/aarch64_generic
-          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ github.sha }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+            build_dir/target-*
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ hashFiles('package/**', 'target/linux/**', 'config/**', 'include/**', 'rules.mk', '.config') }}
 
       - name: Verify firmware metadata
         if: steps.compile.outputs.status == 'success'
