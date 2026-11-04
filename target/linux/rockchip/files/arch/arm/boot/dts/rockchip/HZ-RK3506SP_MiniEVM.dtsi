@@ -257,24 +257,42 @@
 	dr_mode = "host";
 };
 
+/* Sheet 03: the second port is a crystal-less YT8512H on the rmii0 pin group
+ * (GPIO2 bank), fed its 25 MHz reference by ETH_CLK0_25M_OUT on GPIO0_C4 and
+ * returning the 50 MHz RMII clock on RMII0_CLK, hence clock_in_out "input".
+ * R4 and R226 (both 4.7K to VCC3V3_RMII) pull LED0/PHYAD0 and LED1/PHYAD1, so
+ * PHYAD[1:0] = 2'b11 and the MDIO address is 3. */
 &gmac0 {
 	phy-mode = "rmii";
-	clock_in_out = "output";
+	clock_in_out = "input";
+
+	/* Same clk_mac_refout trick as gmac1: the name puts CLK_MAC_OUT into
+	 * dwmac-rk's RMII bulk clock list so the gate is enabled, and the
+	 * assigned rate programs the PMU divider. clocks/clock-names replace the
+	 * inherited four entries, so they are repeated here. */
+	clocks = <&cru CLK_MAC0>, <&cru CLK_MAC0_PTP>,
+		 <&cru PCLK_MAC0>, <&cru ACLK_MAC0>, <&cru CLK_MAC_OUT>;
+	clock-names = "stmmaceth", "ptp_ref",
+		      "pclk_mac", "aclk_mac", "clk_mac_refout";
+	assigned-clocks = <&cru CLK_MAC0_PTP>, <&cru CLK_MAC_OUT>;
+	assigned-clock-rates = <62500000>, <25000000>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&eth_rmii0_miim_pins
 	&eth_rmii0_tx_bus2_pins
 	&eth_rmii0_rx_bus2_pins
-	&eth_rmii0_clk_pins>;
+	&eth_rmii0_clk_pins
+	&eth_clk0_25m_out_pins>;
 
 	phy-handle = <&rmii_phy0>;
-	status = "disabled";
+	status = "okay";
 };
 
 &mdio0 {
-	rmii_phy0: phy@1 {
+	compatible = "snps,dwmac-mdio";
+	rmii_phy0: phy@3 {
 		compatible = "ethernet-phy-ieee802.3-c22";
-		reg = <0x1>;
+		reg = <0x3>;
 	};
 };
 
@@ -287,11 +305,26 @@
 	phy-mode = "rmii";
 	clock_in_out = "input";
 
+	/* The PHY is crystal-less (Y2/C24/C25 are NC) and takes its reference
+	 * from ETH_CLK1_25M_OUT, so clk_mac_out has to run at 25 MHz and reach
+	 * that pad. Naming the clock clk_mac_refout is what puts it in
+	 * dwmac-rk's RMII bulk list, which prepares and enables the gate; the
+	 * rate reaches PMU_CLKSEL_CON0[15:10] through the clock core when this
+	 * node probes. clocks/clock-names are replaced whole, so the four
+	 * inherited entries are repeated here. */
+	clocks = <&cru CLK_MAC1>, <&cru CLK_MAC1_PTP>,
+		 <&cru PCLK_MAC1>, <&cru ACLK_MAC1>, <&cru CLK_MAC_OUT>;
+	clock-names = "stmmaceth", "ptp_ref",
+		      "pclk_mac", "aclk_mac", "clk_mac_refout";
+	assigned-clocks = <&cru CLK_MAC1_PTP>, <&cru CLK_MAC_OUT>;
+	assigned-clock-rates = <62500000>, <25000000>;
+
 	pinctrl-names = "default";
 	pinctrl-0 = <&eth_rmii1_miim_pins
 	&eth_rmii1_tx_bus2_pins
 	&eth_rmii1_rx_bus2_pins
-	&eth_rmii1_clk_pins>;
+	&eth_rmii1_clk_pins
+	&eth_clk1_25m_out_pins>;
 
 	phy-handle = <&rmii_phy1>;
 	status = "okay";
@@ -310,6 +343,20 @@
 };
 
 &pinctrl {
+	/* GPIO0_C3 and GPIO0_C4 double as ETH_CLK1_25M_OUT and
+	 * ETH_CLK0_25M_OUT (sheet 02 pin table; the nets go to the PHYs on
+	 * sheets 03 and 04). The function index comes from the order of the
+	 * alternate names on those balls, not from the TRM, so treat 1 as the
+	 * working assumption to be confirmed on hardware. */
+	eth {
+		eth_clk1_25m_out_pins: eth-clk1-25m-out-pins {
+			rockchip,pins = <0 RK_PC3 1 &pcfg_pull_none>;
+		};
+		eth_clk0_25m_out_pins: eth-clk0-25m-out-pins {
+			rockchip,pins = <0 RK_PC4 1 &pcfg_pull_none>;
+		};
+	};
+
 	headphone {
 		hp_det: hp-det {
 			rockchip,pins = <1 RK_PA6 RK_FUNC_GPIO &pcfg_pull_none>;
