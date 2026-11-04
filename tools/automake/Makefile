@@ -35,7 +35,7 @@ define Host/Configure
 	# hosts with aggressive clock skew (e.g. WSL2) the race can still surface via
 	# a different generated file — a `make -j1` retry or touching the whole build
 	# dir (NOT future-dated, that breaks configure's sanity check) resolves it.
-	(cd $(HOST_BUILD_DIR); touch m4/amversion.m4 configure Makefile.in && touch aclocal.m4)
+	(cd $(HOST_BUILD_DIR); touch aclocal.m4 m4/amversion.m4 configure Makefile.in)
 	$(call Host/Configure/Default)
 endef
 
