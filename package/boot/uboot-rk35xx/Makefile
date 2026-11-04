@@ -63,8 +63,10 @@ define U-Boot/evb-rk3506
     hzhy_mini_evm_emmc \
     hzhy_mini_evm_nand
   DEPENDS:=+PACKAGE_u-boot-evb-rk3506:trusted-firmware-a-rk3506
-  TOS:=rk3506_tee_v2.40.bin
-  DDR:=rk3506_ddr_750MHz_v1.06.bin
+  # Must match TOS/TPL in package/boot/rkbin (Trusted-Firmware-A/rk3506):
+  # those are the names installed into STAGING_DIR_IMAGE.
+  TOS:=rk3506_tee_v2.50.bin
+  DDR:=rk3506_ddr_750MHz_v1.08.bin
   # rkbin prebuilt SPL (installed to STAGING_DIR_IMAGE by trusted-firmware-a-rk3506)
   # used as the idbloader FlashBoot — see package/boot/rkbin for why.
   SPL:=rk3506_spl_v1.12.bin

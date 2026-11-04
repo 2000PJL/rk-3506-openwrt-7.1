@@ -66,8 +66,8 @@ endef
 define Trusted-Firmware-A/rk3506
   BUILD_SUBTARGET:=rk3506
   NAME:=Rockchip RK3506 SoCs
-  TOS:=rk35/rk3506_tee_v2.40.bin
-  TPL:=rk35/rk3506_ddr_750MHz_v1.06.bin
+  TOS:=rk35/rk3506_tee_v2.50.bin
+  TPL:=rk35/rk3506_ddr_750MHz_v1.08.bin
   # rkbin prebuilt SPL (v1.12) — the known-good reference that correctly
   # enters OP-TEE for PSCI / secondary-CPU bringup. The U-Boot-self-built SPL
   # (SPL_OPTEE path) loads OP-TEE but fails PSCI on RK3506; the rkbin SPL is
@@ -118,18 +118,24 @@ ifeq ($(BUILD_VARIANT),rk3568-e25)
 endif
 
 ifeq ($(BUILD_VARIANT),rk3506)
-  TPL_FILE:=rk3506_ddr_750MHz_v1.06.bin
-  TOS_FILE:=rk3506_tee_v2.40.bin
+  # These must be files that actually exist in the rkbin repository:
+  #   https://github.com/rockchip-linux/rkbin/tree/master/bin/rk35
+  # The board's vendor firmware reports ddr-v1.06 / tee-v2.10, but neither
+  # binary is published anywhere (no vendor SDK available), so use the
+  # published rkbin releases instead. Verified 2026-11-02 against the repo
+  # listing: v1.06 -> 404, v2.40 -> absent; v1.08 / v2.50 / v1.12 exist.
+  TPL_FILE:=rk3506_ddr_750MHz_v1.08.bin
+  TOS_FILE:=rk3506_tee_v2.50.bin
   SPL_FILE:=rk3506_spl_v1.12.bin
   define Download/rk3506-tpl
     FILE:=$(TPL_FILE)
     URL:=https://github.com/rockchip-linux/rkbin/raw/master/bin/rk35/
-    HASH:=394172ce23b8f3b966a03a296a7c86d616e1463b781f44901c16f8faa8f6ca64
+    HASH:=4aff156670ec4558efcac280541bd541df6684812369594c605b4bfb4854e8e9
   endef
   define Download/rk3506-tos
     FILE:=$(TOS_FILE)
     URL:=https://github.com/rockchip-linux/rkbin/raw/master/bin/rk35/
-    HASH:=e2a712a5330df72daa4e5c8900e98aa85e0880d0cc0e551f1fb18eb27488da2d
+    HASH:=25ecab701828b2c0381b026b3e3ab7b00a76114b92415208a1e8d3c8fbdb7065
   endef
   define Download/rk3506-spl
     FILE:=$(SPL_FILE)
