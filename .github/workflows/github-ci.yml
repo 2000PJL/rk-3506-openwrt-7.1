@@ -205,8 +205,8 @@ jobs:
           base_dir = $GITHUB_WORKSPACE
           cache_dir_levels = 2
           compression = true
-          compression_level = 9
-          sloppiness = file_stat_matches,include_file_mtime,include_file_ctime,pch_defines,time_macros,file_macro
+          compression_level = 5
+          sloppiness = pch_defines,time_macros
           hash_dir = false
           temporary_dir = /tmp/ccache-temp
           EOF
