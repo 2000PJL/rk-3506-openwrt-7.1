@@ -490,3 +490,10 @@ CONFIG_boost-runtime-shared=y
 CONFIG_boost-static-and-shared-libs=y
 CONFIG_boost-variant-release=y
 # CONFIG_OCSERV_PROTOBUF is not set
+#
+# Ask for ccache where the build system reads it: rules.mk only prefixes ccache
+# onto TARGET_CC/HOSTCC when CONFIG_CCACHE is set, and that symbol is declared
+# `if DEVEL` in config/Config-devel.in, so DEVEL has to be on for it to exist.
+#
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
