@@ -44,14 +44,15 @@
 	};
 };
 
-/* SD slot. broken-cd stays: this is the boot medium, and polling the card
- * does not depend on getting the detect line right. The schematic does say
- * which line it is - sheet 07 puts SDMMC0_DET_L on GPIO1_A3, floating high
- * with the card out and tied to GND with it in - so the NAND variants use
- * cd-gpios=<&gpio1 RK_PA3>. The card runs 3.3V only, hence no-1-8-v and no
- * sd-uhs-sdr104; with the 1.8V vqmmc the vendor file asked for, dwmmc probed
- * and got a CD GPIO but never detected the card, and rootwait spun forever
- * (log uart_20260719_0007). */
+/* SD slot - this is also the boot medium, so the card must not disappear
+ * under the mounted rootfs. broken-cd made dw_mmc poll at 1 Hz and every
+ * rescan re-negotiated the bus, which is what tore down mmcblk0 in uart.log
+ * ("card e624 removed" at 23.2s, then squashfs/f2fs I/O errors). Sheet 07
+ * puts SDMMC0_DET_L on GPIO1_A3 - floating with the card out, GND with it in,
+ * so the pad needs its internal pull-up - hence a real cd-gpios here, the same
+ * as the NAND variants. max-frequency holds the bus at 25 MHz; the 50 MHz
+ * High-Speed clock the vendor file assumed is not proven on this board.
+ * The card runs 3.3V only, hence no-1-8-v and no sd-uhs-sdr104. */
 &mmc {
 	/delete-property/ no-sd;
 	/delete-property/ ignore-pm-notify;
@@ -63,11 +64,20 @@
 	no-sdio;
 	no-mmc;
 	no-1-8-v;
-	broken-cd;
+	max-frequency = <25000000>;
+	cd-gpios = <&gpio1 RK_PA3 GPIO_ACTIVE_LOW>;
 	disable-wp;
 	pinctrl-names = "default";
-	pinctrl-0 = <&sdmmc_clk_pins &sdmmc_cmd_pins &sdmmc_bus4_pins>;
+	pinctrl-0 = <&sdmmc_clk_pins &sdmmc_cmd_pins &sdmmc_bus4_pins &sd_det>;
 	vmmc-supply = <&vcc_3v3>;
 	vqmmc-supply = <&vccio_sd>;
 	status = "okay";
+};
+
+&pinctrl {
+	sdmmc {
+		sd_det: sd-det {
+			rockchip,pins = <1 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
 };
