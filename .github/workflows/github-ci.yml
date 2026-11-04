@@ -127,20 +127,89 @@ jobs:
           echo "--------------------------硬盘信息--------------------------"
           echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
 
+      - name: Restore apt archive cache
+        id: aptcache
+        uses: actions/cache/restore@v4
+        with:
+          path: .apt/archives
+          key: apt-archives-${{ runner.os }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
+          restore-keys: |
+            apt-archives-${{ runner.os }}-
+
       - name: Space cleanup and Initialization environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # Point apt's download directory into the workspace. actions/cache tars
+          # relative to GITHUB_WORKSPACE as the unprivileged runner user, so it can
+          # neither restore into nor reliably read the root-owned
+          # /var/cache/apt/archives. Dir::Cache is the parent of Dir::Cache::archives.
+          mkdir -p "$GITHUB_WORKSPACE/.apt/archives/partial"
+          echo "Dir::Cache \"$GITHUB_WORKSPACE/.apt\";" \
+            | sudo tee /etc/apt/apt.conf.d/99openwrt-cache-archives > /dev/null
+
+          # This step was 528s of a 1290s warm run, so time each phase rather than
+          # guessing which one is slow.
+          t0=$SECONDS
+          t=$SECONDS
           docker image prune -f
+          echo "PHASE docker-prune: $((SECONDS - t))s"; t=$SECONDS
+
           sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
           sudo apt-mark hold grub-efi-amd64-signed
+          echo "PHASE rm-and-hold: $((SECONDS - t))s"; t=$SECONDS
+
           sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          echo "PHASE apt-update: $((SECONDS - t))s"; t=$SECONDS
+
           sudo DEBIAN_FRONTEND=noninteractive apt-get -y --ignore-missing purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* snap* || true
-          sudo DEBIAN_FRONTEND=noninteractive apt-get -y install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          echo "PHASE apt-purge: $((SECONDS - t))s"; t=$SECONDS
+
+          # Each remaining entry has an in-tree consumer:
+          #   swig       include/u-boot.mk's TestHostCommand, needed to build
+          #              uboot-rockchip's libfdt python bindings.
+          #   dtc, squashfs-tools, xxd, texinfo(makeinfo), help2man, cmake,
+          #   ninja-build, pkgconf, libtool, bison, flex, gettext, gperf,
+          #   autopoint, intltool   referenced by tools/, include/ or target/.
+          # Removed, with the evidence:
+          #   clang, llvm   CONFIG_USE_LLVM_HOST is unset, so include/bpf.mk never
+          #                 takes the `command -v clang` branch; the BPF toolchain
+          #                 comes from tools/llvm-bpf. The purge above deletes the
+          #                 runner image's llvm* and openjdk*, and the old list
+          #                 then reinstalled llvm-18 (24 MB) through clang/llvm
+          #                 and openjdk-21-jre-headless (44 MB) through antlr3.
+          #   antlr3, ack, asciidoc, lrzsz, msmtp, scons, upx-ucl, vim, xmlto
+          #                 zero references anywhere in include/ tools/ toolchain/
+          #                 target/ scripts/ package/.
+          #   genisoimage   only target/linux/x86.
+          #   qemu-utils    only Build/vdi and Build/vmdk, which rockchip's image
+          #                 recipes never call.
+          #   p7zip*        only CONFIG_TARGET_realtek and BUILD_ALL_HOST_TOOLS,
+          #                 and tools/7z builds its own 7zr when either is on.
+          #   subversion    every feed in feeds.conf.default is src-git.
+          #   uglifyjs      LuCI minifies with the in-tree jsmin host tool behind
+          #                 CONFIG_LUCI_JSMIN, which this defconfig leaves off.
+          # haveged stays: it is not a build dependency, but it is 32 KB and its
+          # absence would show up as an unexplained stall rather than an error.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y install autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool ninja-build patch pkgconf python3 python3-pyelftools python3-setuptools rsync squashfs-tools swig texinfo unzip wget xxd zlib1g-dev
+          echo "PHASE apt-install: $((SECONDS - t))s"; t=$SECONDS
+
           sudo systemctl daemon-reload
           sudo DEBIAN_FRONTEND=noninteractive apt-get -y autoremove --purge
-          sudo DEBIAN_FRONTEND=noninteractive apt-get -y clean
+          echo "PHASE apt-autoremove: $((SECONDS - t))s"; t=$SECONDS
+
+          # No `apt-get clean`: the .debs are the payload of the cache saved below.
           sudo timedatectl set-timezone "$TZ"
+          echo "PHASE timezone-and-inventory: $((SECONDS - t))s"
+          echo "apt archives kept for caching: $(find .apt/archives -maxdepth 1 -name '*.deb' | wc -l) files, $(du -sh .apt/archives | cut -f1)"
+          echo "PHASE step5-total: $((SECONDS - t0))s"
+
+      - name: Save apt archive cache
+        if: always() && steps.aptcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .apt/archives
+          key: apt-archives-${{ runner.os }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
 
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
