@@ -20,3 +20,4 @@
 0020-ARM-rockchip-add-RK3506-machine-and-debug-UART.patch
 0021-ARM-dts-rockchip-rk3506-fix-mdio-EBUSY-drop-snps-dwmac-mdio-compatible.patch
 0022-ARM-rockchip-rk3506-add-SMP-coherency-diagnostic.patch
+0023-mtd-spinand-add-hiksemi-support.patch
