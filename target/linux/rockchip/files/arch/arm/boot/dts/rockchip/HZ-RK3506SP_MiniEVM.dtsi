@@ -257,158 +257,106 @@
 	dr_mode = "host";
 };
 
-/* Sheet 03: the second port is a crystal-less YT8512H on the rmii0 pin group
- * (GPIO2 bank), fed its 25 MHz reference by ETH_CLK0_25M_OUT on GPIO0_C4 and
- * returning the 50 MHz RMII clock on RMII0_CLK, hence clock_in_out "input".
+/* Sheet 03: YT8512H on the rmii0 pin group (GPIO2 bank). The 50 MHz RMII clock
+ * arrives on RMII0_CLK, hence clock_in_out "input".
  *
- * Reset: RMII0_RSTN leaves ball L1 (REF_CLK1_OUT/SPI0_MISO/RM_IO18/GPIO0_C2_d)
- * and reaches PHYRSTB through a fitted R21 0R. Nothing else drives or pulls that
- * net -- sheet 03 has no resistor on RMII_RSTn, only R9 4.7K on PHY_INT -- so an
- * undriven pad leaves the PHY's reset input floating and the chip never starts.
- * That is why the previous build reported "MDIO device at address 3 is missing"
- * rather than a link or autonegotiation problem. Straight connection to an
- * RSTN-named pin, so ACTIVE_LOW: logical 1 (assert) drives the pad low.
+ * No clock pad here on purpose: the vendor board DTS
+ * (kernel-6.1 HZ-RK3506SP_MiniEVM.dtsi:162-181) gives each MAC exactly four
+ * pinctrl groups, never eth_clk0/1_25m_out_pins, and overrides neither clocks
+ * nor assigned-clock-rates, so CLK_MAC_OUT stays unused and GPIO0_C4/C3 are not
+ * muxed to a 25 MHz output. The factory NAND image boots with those pads at
+ * func 0 and both ports at 100M, and tri-stating the pad on our image changed
+ * nothing, so the SoC is not this PHY's timebase and driving it only risks
+ * contending with the crystal on the XI pin.
  *
- * MDIO address: R4 and R226 (both 4.7K to VCC3V3_RMII) pull LED0/PHYAD0 and
- * LED1/PHYAD1, which would give PHYAD[1:0] = 2'b11 = address 3, but the same
- * sheet lists a "00(default)" strap row and R5/R7 are NC, so the address is a
- * guess. This build therefore drops phy-handle and lets stmmac scan the whole
- * bus and print what it actually finds. */
+ * Reset: RMII0_RSTN leaves ball L1 (GPIO0_C2) and reaches PHYRSTB through a
+ * fitted R21 0R -- straight connection to an RSTN-named pin, so ACTIVE_LOW. An
+ * undriven pad left the reset input floating, which is what produced
+ * "MDIO device at address 3 is missing".
+ *
+ * MDIO address 0: measured on hardware as stmmac-0:00 (address 3 also answers,
+ * which is why the earlier strap-based guess looked plausible). */
 &gmac0 {
 	phy-mode = "rmii";
 	clock_in_out = "input";
-
-	/* Same clk_mac_refout trick as gmac1: the name puts CLK_MAC_OUT into
-	 * dwmac-rk's RMII bulk clock list so the gate is enabled, and the
-	 * assigned rate programs the PMU divider. clocks/clock-names replace the
-	 * inherited four entries, so they are repeated here. */
-	clocks = <&cru CLK_MAC0>, <&cru CLK_MAC0_PTP>,
-		 <&cru PCLK_MAC0>, <&cru ACLK_MAC0>, <&cru CLK_MAC_OUT>;
-	clock-names = "stmmaceth", "ptp_ref",
-		      "pclk_mac", "aclk_mac", "clk_mac_refout";
-	assigned-clocks = <&cru CLK_MAC0_PTP>, <&cru CLK_MAC_OUT>;
-	assigned-clock-rates = <62500000>, <25000000>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&eth_rmii0_miim_pins
 	&eth_rmii0_tx_bus2_pins
 	&eth_rmii0_rx_bus2_pins
-	&eth_rmii0_clk_pins
-	&eth_clk0_25m_out_pins>;
+	&eth_rmii0_clk_pins>;
 
-	/* snps,reset-active-low is deliberately absent: stmmac_mdio_reset()
-	 * never reads it, it takes the sense from the GPIO flag above through
-	 * the gpiod logical-value API (set 1 = assert, wait delays[1], set 0 =
-	 * release, wait delays[2]). The callback is installed at all because the
-	 * legacy-MDIO path below sets needs_reset, and mdio_bus_provider runs
-	 * bus->reset() before mdiobus_scan_bus_c22(). */
+	phy-handle = <&rmii_phy0>;
+
+	/* Vendor text. stmmac_mdio.c:398-411 uses slot 0 as the wait *before*
+	 * asserting reset -- the "power stable -> assert" margin the vendor wiki
+	 * asks to keep above 10 ms -- then holds the pulse for slot 1 and waits
+	 * slot 2 after release; the earlier <0 20000 100000> skipped slot 0, which
+	 * only a cold boot could hide. snps,reset-active-low is read by no kernel,
+	 * so polarity still comes only from the GPIO flag. */
 	snps,reset-gpio = <&gpio0 RK_PC2 GPIO_ACTIVE_LOW>;
-	snps,reset-delays-us = <0 20000 100000>;
+	snps,reset-delays-us = <20000 20000 20000>;
 
-	/* DIAGNOSTIC: no phy-handle. Together with the missing
-	 * "snps,dwmac-mdio" below this makes stmmac_platform take the
-	 * legacy_mdio path; of_mdiobus_register(bus, NULL) then falls through to
-	 * __mdiobus_register(), which probes every address 0..31 and lets
-	 * phy_find_first() attach whatever answered. Restore phy-handle once the
-	 * boot log has reported the real address. */
 	status = "okay";
 };
 
-/* Kept as documentation of the guessed address only: with the
- * "snps,dwmac-mdio" compatible gone, stmmac_of_get_mdio() returns NULL and
- * nothing ever walks these children, and of_platform_populate() has no
- * compatible to match so no second platform device appears either (the -EBUSY
- * that patches-7.1/0021 removed the compatible to avoid). Do not put the
- * compatible back before the scan has named a real address, or the bus reverts
- * to probing only what is listed here. */
 &mdio0 {
-	rmii_phy0: phy@3 {
+	/* rk3506.dtsi carries this compatible and patches-7.1/0021 deletes it; it
+	 * has to come back to reach the vendor shape, because without it
+	 * stmmac_of_get_mdio() returns NULL, no bus is registered and phy-handle has
+	 * nothing to resolve against (-ENODEV). Verified on hardware at c709067:
+	 * both mdio_bus stmmac-0 and stmmac-1 appear, no -EBUSY. */
+	compatible = "snps,dwmac-mdio";
+
+	rmii_phy0: phy@0 {
 		compatible = "ethernet-phy-ieee802.3-c22";
-		reg = <0x3>;
+		reg = <0x0>;
 	};
 };
 
-/* Sheet 04: U3, a crystal-less YT8522H on the rmii1 pin group, fed its 25 MHz
- * reference by ETH_CLK1_25M_OUT on GPIO0_C3, so the 50 MHz RMII clock comes
- * back in.
+/* Sheet 04: U3, a YT8522H on the rmii1 pin group (GPIO3 bank), with its own
+ * 25 MHz crystal -- Y2 and load caps C24/C25 are fitted, confirmed visually on
+ * the board, which overturns the "crystal-less, Y2/C24/C25 = NC" reading this
+ * file used to carry. So the reference for this MAC is the PHY's, not ours, and
+ * GPIO0_C3 must not be muxed to eth_clk1_25m_out (see gmac0 above).
  *
- * Reset: RMII1_RSTN/1.8V leaves ball G1 (OSC_CLK_OUT/REF_CLK0_OUT/GPIO0_D0_d).
- * The series R51 to PHY1RSTB is NC, but the earlier reading of that -- "reset is
- * formed locally by R63/Q1, so there is no snps,reset-gpio here" -- was wrong:
- * the net goes through R62 330R into the base of Q1 (MMBT3904, emitter to
- * ground), whose open collector pulls PHY1RSTB low through D2, while R63 4.7K
- * holds PHY1RSTB high when Q1 is off. That is an inverting stage, so asserting
- * reset means driving the pad HIGH -- GPIO_ACTIVE_HIGH, not ACTIVE_LOW, despite
- * the RSTN net name. The pull-up also means this PHY self-releases when the pin
- * is left floating, which is why stmmac-1 could fail for a different reason than
- * stmmac-0 did.
+ * Reset: RMII1_RSTN/1.8V leaves ball G1 (GPIO0_D0). The series R51 to PHY1RSTB
+ * is NC; the net instead goes through R62 330R into the base of Q1 (MMBT3904,
+ * emitter to ground), whose open collector pulls PHY1RSTB low through D2 while
+ * R63 4.7K holds it high when Q1 is off. That is an inverting stage, so
+ * asserting reset drives the pad HIGH -- GPIO_ACTIVE_HIGH despite the RSTN name.
  *
- * MDIO address: read as 1 from the sheet-04 option table even though R35 and R37
- * both look fitted, so it is a guess and this build scans the whole bus. */
+ * MDIO address 0: measured on hardware as stmmac-1:00. */
 &gmac1 {
 	phy-mode = "rmii";
 	clock_in_out = "input";
-
-	/* The PHY is crystal-less (Y2/C24/C25 are NC) and takes its reference
-	 * from ETH_CLK1_25M_OUT, so clk_mac_out has to run at 25 MHz and reach
-	 * that pad. Naming the clock clk_mac_refout is what puts it in
-	 * dwmac-rk's RMII bulk list, which prepares and enables the gate; the
-	 * rate reaches PMU_CLKSEL_CON0[15:10] through the clock core when this
-	 * node probes. clocks/clock-names are replaced whole, so the four
-	 * inherited entries are repeated here. */
-	clocks = <&cru CLK_MAC1>, <&cru CLK_MAC1_PTP>,
-		 <&cru PCLK_MAC1>, <&cru ACLK_MAC1>, <&cru CLK_MAC_OUT>;
-	clock-names = "stmmaceth", "ptp_ref",
-		      "pclk_mac", "aclk_mac", "clk_mac_refout";
-	assigned-clocks = <&cru CLK_MAC1_PTP>, <&cru CLK_MAC_OUT>;
-	assigned-clock-rates = <62500000>, <25000000>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&eth_rmii1_miim_pins
 	&eth_rmii1_tx_bus2_pins
 	&eth_rmii1_rx_bus2_pins
-	&eth_rmii1_clk_pins
-	&eth_clk1_25m_out_pins>;
+	&eth_rmii1_clk_pins>;
 
-	/* Polarity per the block comment above; see gmac0 for why
-	 * snps,reset-active-low is absent. */
+	phy-handle = <&rmii_phy1>;
+
+	/* Vendor text; see gmac0 for what each slot does. */
 	snps,reset-gpio = <&gpio0 RK_PD0 GPIO_ACTIVE_HIGH>;
-	snps,reset-delays-us = <0 20000 100000>;
+	snps,reset-delays-us = <20000 20000 20000>;
 
-	/* DIAGNOSTIC: see gmac0 -- no phy-handle plus no mdio compatible below
-	 * gives the legacy full 0..31 scan. */
 	status = "okay";
 };
 
-/* Adding "snps,dwmac-mdio" here (commit 7479dfc) was what made stmmac register
- * an MDIO bus at all: rk3506.dtsi's mdio1 carries no compatible, so
- * stmmac_of_get_mdio() returned NULL, the bus never appeared in the device list,
- * and the attach failed with -ENODEV. The boot log now confirms that on real
- * silicon -- mdio_bus stmmac-0 and stmmac-1 are both added. The compatible is
- * taken back out only so this diagnostic build scans every address rather than
- * the one guessed here; the child node is documentation, nothing walks it. */
 &mdio1 {
-	rmii_phy1: phy@1 {
+	/* See mdio0. */
+	compatible = "snps,dwmac-mdio";
+
+	rmii_phy1: phy@0 {
 		compatible = "ethernet-phy-ieee802.3-c22";
-		reg = <0x1>;
+		reg = <0x0>;
 	};
 };
 
 &pinctrl {
-	/* GPIO0_C3 and GPIO0_C4 double as ETH_CLK1_25M_OUT and
-	 * ETH_CLK0_25M_OUT (sheet 02 pin table; the nets go to the PHYs on
-	 * sheets 03 and 04). The function index comes from the order of the
-	 * alternate names on those balls, not from the TRM, so treat 1 as the
-	 * working assumption to be confirmed on hardware. */
-	eth {
-		eth_clk1_25m_out_pins: eth-clk1-25m-out-pins {
-			rockchip,pins = <0 RK_PC3 1 &pcfg_pull_none>;
-		};
-		eth_clk0_25m_out_pins: eth-clk0-25m-out-pins {
-			rockchip,pins = <0 RK_PC4 1 &pcfg_pull_none>;
-		};
-	};
-
 	headphone {
 		hp_det: hp-det {
 			rockchip,pins = <1 RK_PA6 RK_FUNC_GPIO &pcfg_pull_none>;
