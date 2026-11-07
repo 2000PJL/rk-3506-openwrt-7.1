@@ -1,0 +1,155 @@
+#
+# HZ-RK3506SP MiniEVM (RK3506, 32-bit ARM Cortex-A7) Configuration
+# 基于 lubancat_defconfig 改造，target 改为 rk3506 子目标
+#
+# 本轮裁剪为"纯路由 + LuCI 管理界面"：去掉代理/VPN、文件/媒体服务、
+# collectd 监控、python3/ruby/boost 运行时和本板用不到的 WiFi 驱动。
+# 只列顶层包，依赖交给 kconfig 解析，不再手工枚举 lib*。
+#
+CONFIG_TARGET_rockchip=y
+CONFIG_TARGET_rockchip_rk3506=y
+CONFIG_TARGET_MULTI_PROFILE=y
+CONFIG_TARGET_DEVICE_rockchip_rk3506_DEVICE_hzhy_mini_evm_nand=y
+CONFIG_TARGET_DEVICE_rockchip_rk3506_DEVICE_hzhy_mini_evm_nand256=y
+CONFIG_TARGET_DEVICE_rockchip_rk3506_DEVICE_hzhy_mini_evm_sd=y
+CONFIG_TARGET_KERNEL_PARTSIZE=32
+# CONFIG_TARGET_ROOTFS_EXT4FS is not set
+CONFIG_TARGET_ROOTFS_PARTSIZE=512
+CONFIG_TARGET_ROOTFS_UBIFS=y
+
+CONFIG_BUSYBOX_CUSTOM=y
+CONFIG_BUSYBOX_CONFIG_FDISK=y
+CONFIG_BUSYBOX_CONFIG_LSPCI=y
+CONFIG_BUSYBOX_CONFIG_LSUSB=y
+CONFIG_BUSYBOX_CONFIG_MKE2FS=y
+CONFIG_BUSYBOX_CONFIG_MKFS_EXT2=y
+CONFIG_BUSYBOX_CONFIG_MKFS_MINIX=y
+
+
+#
+# DNS / DHCP：dnsmasq-full 提供 DHCPv6、DNSSEC、nftset 联动
+#
+# dnsmasq 必须显式 =n，不能写成 =m。include/target.mk 的 DEFAULT_PACKAGES.router
+# 会把它默认成 =y，而 dnsmasq-full 只声明 PROVIDES:=dnsmasq、没有 CONFLICTS，
+# kconfig 不会阻止两者同时进入 rootfs，它们会在 make package/install 时抢
+# /etc/dnsmasq.conf、/etc/init.d/dnsmasq 等文件。更隐蔽的是 =m 在 make 的
+# $(if $(CONFIG_PACKAGE_dnsmasq),...) 里仍为真，tmp/.packagedeps 会保留
+# nodhcpv6 变体，PACKAGE_INSTALL_FILES 因此引用
+# staging_dir/target-*/pkginfo/dnsmasq.nodhcpv6.install；热缓存里残留的这份
+# 旧 stamp 会被 cat 进 opkg 安装列表，把 dnsmasq 重新装回来。=n 会让该变体
+# 彻底消失，旧缓存也就无从注入。
+# CONFIG_PACKAGE_dnsmasq is not set
+CONFIG_PACKAGE_dnsmasq-full=y
+CONFIG_PACKAGE_dnsmasq_full_auth=y
+CONFIG_PACKAGE_dnsmasq_full_conntrack=y
+CONFIG_PACKAGE_dnsmasq_full_dhcp=y
+CONFIG_PACKAGE_dnsmasq_full_dhcpv6=y
+CONFIG_PACKAGE_dnsmasq_full_dnssec=y
+CONFIG_PACKAGE_dnsmasq_full_ipset=y
+CONFIG_PACKAGE_dnsmasq_full_nftset=y
+CONFIG_PACKAGE_dnsmasq_full_noid=y
+CONFIG_PACKAGE_dnsmasq_full_tftp=y
+
+#
+# 路由 / 排查工具
+#
+CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_resize2fs=y
+CONFIG_PACKAGE_lsblk=y
+CONFIG_PACKAGE_ip-full=y
+CONFIG_PACKAGE_iperf3-ssl=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_wget-ssl=y
+CONFIG_PACKAGE_ca-certificates=y
+CONFIG_PACKAGE_openssl-util=y
+CONFIG_PACKAGE_htop=y
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_unzip=y
+CONFIG_PACKAGE_terminfo=y
+# 串口推二进制时板上没有 base64，只能用 gzip + 八进制 printf；补上它。
+CONFIG_PACKAGE_coreutils-base64=y
+
+#
+# 存储 / USB（本板有 USB host，保留 U 盘与 USB 网卡能力）
+#
+CONFIG_PACKAGE_kmod-fs-exfat=y
+CONFIG_PACKAGE_kmod-fs-ext4=y
+CONFIG_PACKAGE_kmod-fs-ntfs3=y
+CONFIG_PACKAGE_kmod-fs-vfat=y
+CONFIG_PACKAGE_kmod-nls-base=y
+CONFIG_PACKAGE_kmod-nls-cp437=y
+CONFIG_PACKAGE_kmod-nls-iso8859-1=y
+CONFIG_PACKAGE_kmod-nls-ucs2-utils=y
+CONFIG_PACKAGE_kmod-nls-utf8=y
+CONFIG_PACKAGE_kmod-usb-core=y
+CONFIG_PACKAGE_kmod-usb-ehci=y
+CONFIG_PACKAGE_kmod-usb-xhci-hcd=y
+CONFIG_PACKAGE_kmod-usb2=y
+CONFIG_PACKAGE_kmod-usb3=y
+CONFIG_PACKAGE_kmod-usb-storage=y
+CONFIG_PACKAGE_kmod-usb-storage-extras=y
+CONFIG_PACKAGE_kmod-usb-storage-uas=y
+CONFIG_PACKAGE_kmod-usb-ledtrig-usbport=y
+CONFIG_PACKAGE_kmod-usb-net=y
+CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
+CONFIG_PACKAGE_kmod-usb-net-rndis=y
+CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+CONFIG_PACKAGE_r8152-firmware=y
+
+#
+# netfilter / 诊断（firewall4 走 nftables，不再带 legacy iptables）
+#
+CONFIG_PACKAGE_kmod-nft-bridge=y
+CONFIG_PACKAGE_kmod-inet-diag=y
+CONFIG_PACKAGE_kmod-netlink-diag=y
+CONFIG_PACKAGE_kmod-thermal=y
+
+#
+# LuCI：只留管理必需
+#
+# CONFIG_LUCI_CSSTIDY is not set
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-base=y
+CONFIG_PACKAGE_luci-mod-admin-full=y
+CONFIG_PACKAGE_luci-mod-network=y
+CONFIG_PACKAGE_luci-mod-status=y
+CONFIG_PACKAGE_luci-mod-system=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-app-uhttpd=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-theme-bootstrap=y
+CONFIG_PACKAGE_luci-theme-material=y
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-uhttpd-zh-cn=y
+CONFIG_PACKAGE_cgi-io=y
+CONFIG_PACKAGE_rpcd=y
+CONFIG_PACKAGE_rpcd-mod-file=y
+CONFIG_PACKAGE_rpcd-mod-iwinfo=y
+CONFIG_PACKAGE_rpcd-mod-luci=y
+CONFIG_PACKAGE_rpcd-mod-rpcsys=y
+CONFIG_PACKAGE_rpcd-mod-rrdns=y
+CONFIG_PACKAGE_rpcd-mod-ucode=y
+CONFIG_PACKAGE_uhttpd=y
+CONFIG_PACKAGE_uhttpd-mod-ubus=y
+
+#
+# Ask for ccache where the build system reads it: rules.mk only prefixes ccache
+# onto TARGET_CC/HOSTCC when CONFIG_CCACHE is set, and that symbol is declared
+# `if DEVEL` in config/Config-devel.in, so DEVEL has to be on for it to exist.
+#
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+#
+# Stamp names decide what a reused build dir is worth: without AUTOREMOVE the
+# .prepared_<hash> name embeds the source files' mtimes (find_md5 in
+# include/depends.mk uses -printf "%p%T@"), so a fresh checkout renames it, the
+# build dir is dropped and every package rebuilds no matter how good the cache
+# hit was. AUTOREMOVE switches it to find_md5_reproducible (content hash), which
+# lets an unchanged package be skipped outright.
+#
+CONFIG_AUTOREMOVE=y
