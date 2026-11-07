@@ -29,11 +29,16 @@ CONFIG_BUSYBOX_CONFIG_MKFS_MINIX=y
 #
 # DNS / DHCP：dnsmasq-full 提供 DHCPv6、DNSSEC、nftset 联动
 #
-# dnsmasq has to stay =m. include/target.mk DEFAULT_PACKAGES.router lists it, so an
-# unmentioned seed line silently becomes =y; dnsmasq-full only PROVIDES:=dnsmasq and
-# declares no CONFLICTS, so kconfig lets both land in the rootfs and they collide on
-# /etc/dnsmasq.conf and /etc/init.d/dnsmasq during make package/install.
-CONFIG_PACKAGE_dnsmasq=m
+# dnsmasq 必须显式 =n，不能写成 =m。include/target.mk 的 DEFAULT_PACKAGES.router
+# 会把它默认成 =y，而 dnsmasq-full 只声明 PROVIDES:=dnsmasq、没有 CONFLICTS，
+# kconfig 不会阻止两者同时进入 rootfs，它们会在 make package/install 时抢
+# /etc/dnsmasq.conf、/etc/init.d/dnsmasq 等文件。更隐蔽的是 =m 在 make 的
+# $(if $(CONFIG_PACKAGE_dnsmasq),...) 里仍为真，tmp/.packagedeps 会保留
+# nodhcpv6 变体，PACKAGE_INSTALL_FILES 因此引用
+# staging_dir/target-*/pkginfo/dnsmasq.nodhcpv6.install；热缓存里残留的这份
+# 旧 stamp 会被 cat 进 opkg 安装列表，把 dnsmasq 重新装回来。=n 会让该变体
+# 彻底消失，旧缓存也就无从注入。
+# CONFIG_PACKAGE_dnsmasq is not set
 CONFIG_PACKAGE_dnsmasq-full=y
 CONFIG_PACKAGE_dnsmasq_full_auth=y
 CONFIG_PACKAGE_dnsmasq_full_conntrack=y

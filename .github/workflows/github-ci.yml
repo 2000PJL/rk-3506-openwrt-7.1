@@ -10,14 +10,14 @@ on:
     inputs:
       cache_generation:
         description: >-
-          Cache key generation. Keep 1 for normal builds. Bump it (2, 3, ...) to re-snapshot
+          Cache key generation. Keep 2 for normal builds. Bump it (3, 4, ...) to re-snapshot
           every category: the previous entries are still restored through restore-keys, so the
           run starts warm and writes fresh entries under the new key. Use this to refresh the
           ccache snapshot (an exact-hit cache is never re-saved) or to re-bake an entry after
           changing a cache key. For a genuinely cold build, delete the entries under
           Actions -> Caches instead.
         required: false
-        default: '1'
+        default: '2'
         type: string
 
 permissions:
@@ -76,9 +76,12 @@ jobs:
     env:
       DEVICE_TARGET: rockchip
       DEVICE_SUBTARGET: rk3506
-      # Empty for scheduled runs, so the expression falls back to generation 1 and the
-      # keys stay byte-identical to the ones a plain dispatch produces.
-      CACHE_GEN: ${{ github.event.inputs.cache_generation || '1' }}
+      # Empty for scheduled runs, so the expression falls back to generation 2 and the
+      # keys stay byte-identical to the ones a plain dispatch produces. Generation 2
+      # retires the gen-1 package caches that were built while dnsmasq was still =y:
+      # those snapshots carry a pkginfo/dnsmasq.nodhcpv6.install stamp that puts the
+      # plain dnsmasq package back into the rootfs next to dnsmasq-full.
+      CACHE_GEN: ${{ github.event.inputs.cache_generation || '2' }}
 
     steps:
       - name: Checkout OpenWrt
@@ -294,7 +297,23 @@ jobs:
               exit 1
             fi
           done
+          # dnsmasq must be off, and =m does not count as off here: make's
+          # $(if $(CONFIG_PACKAGE_dnsmasq),...) treats "m" as true, so tmp/.packagedeps
+          # keeps the nodhcpv6 variant and PACKAGE_INSTALL_FILES references
+          # pkginfo/dnsmasq.nodhcpv6.install. A stale copy of that stamp restored from the
+          # packages cache re-adds dnsmasq to the opkg install list, where it collides with
+          # dnsmasq-full. Require the explicit =n spelling.
+          if ! grep -qx '# CONFIG_PACKAGE_dnsmasq is not set' .config; then
+            echo "::error::dnsmasq must be disabled (=n); =m still lets a cached nodhcpv6 install stamp leak into the rootfs"
+            grep -E '^CONFIG_PACKAGE_dnsmasq[= ]' .config || echo "  (dnsmasq symbols absent from .config)"
+            exit 1
+          fi
+          if ! grep -qx 'CONFIG_PACKAGE_dnsmasq-full=y' .config; then
+            echo "::error::dnsmasq-full must be =y or the image ships without DNS/DHCP"
+            exit 1
+          fi
           grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE|FEED_luci|PACKAGE_luci)=' .config
+          grep -E '^# CONFIG_PACKAGE_dnsmasq is not set|^CONFIG_PACKAGE_dnsmasq-full=' .config
 
       - name: Restore toolchain cache
         id: toolchain
@@ -357,8 +376,14 @@ jobs:
             staging_dir/target-*
             build_dir/target-*
           key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
+          # restore-keys normally stop before the config hash so a config change starts
+          # warm. They must not stop before the generation: otherwise a config change can
+          # fall back to the newest package cache of *any* generation, including a snapshot
+          # whose pkginfo still holds install stamps from an incompatible selection. That is
+          # exactly how dnsmasq.nodhcpv6.install (content: "dnsmasq") survived a seed fix and
+          # was installed next to dnsmasq-full.
           restore-keys: |
-            packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+            packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-
 
       # Re-date every restored build tree to "now": without it, every restored stamp is older
       # than the fresh checkout and make rebuilds the world even when restore-keys brought the
