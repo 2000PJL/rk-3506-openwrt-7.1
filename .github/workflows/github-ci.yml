@@ -498,6 +498,63 @@ jobs:
             build_dir/target-*
           key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
 
+      # The runner's log/status channel has died on three consecutive build jobs
+      # (#27/#28/#29), and a dead channel means the job's log blob is never uploaded
+      # at all -- cancelling only finalises the job, it does not produce a log. Run
+      # #27 proves artifact upload survives that failure: it published three
+      # artifacts and a Release while its step timeline stayed frozen at step 6.
+      # So route failure evidence through artifacts rather than through the log.
+      # Placed before the success-gated steps so it runs on a failed compile too.
+      - name: Collect build evidence
+        if: always()
+        run: |
+          mkdir -p ./artifact/evidence
+          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log; do
+            [ -f "$f" ] && cp -f "$f" ./artifact/evidence/ 2>/dev/null
+          done
+          [ -d bin/.logs ] && cp -rf bin/.logs ./artifact/evidence/host-logs 2>/dev/null
+          [ -f .config ] && cp -f .config ./artifact/evidence/config.final 2>/dev/null
+          {
+            echo "=== compile step output status ==="
+            echo "status='${{ steps.compile.outputs.status }}'  (empty means the compile step did not report success)"
+            echo
+            echo "=== feeds revisions actually used (CI restores these from cache) ==="
+            for d in feeds/*; do
+              [ -d "$d/.git" ] && echo "$(basename $d) $(git -C $d rev-parse --short HEAD) $(git -C $d log -1 --format=%cI)"
+            done
+            echo
+            echo "=== package selection counts ==="
+            echo "seed requested : $(grep -c '^CONFIG_PACKAGE_.*=y' config/hz-sp-rk3506-MiniEVM_defconfig)"
+            echo "final .config  : $(grep -c '^CONFIG_PACKAGE_.*=y' .config)"
+            echo "luci selected  : $(grep -c '^CONFIG_PACKAGE_luci.*=y' .config)"
+            echo
+            echo "=== disk ==="
+            df -h
+            echo
+            echo "=== top-level tree sizes ==="
+            du -sh build_dir staging_dir .ccache bin dl 2>/dev/null
+            echo
+            echo "=== ccache stats ==="
+            ccache -s 2>/dev/null | head -25
+            echo
+            echo "=== newest build_dir work dirs (what was in flight) ==="
+            find build_dir -maxdepth 2 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -15
+            echo
+            echo "=== tail of build-main.log ==="
+            tail -80 /tmp/build-main.log 2>/dev/null
+          } > ./artifact/evidence/state.txt 2>&1
+          ls -la ./artifact/evidence/
+          true
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_evidence_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Verify firmware metadata
         if: steps.compile.outputs.status == 'success'
         run: |
