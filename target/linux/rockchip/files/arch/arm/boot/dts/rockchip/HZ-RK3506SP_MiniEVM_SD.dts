@@ -27,19 +27,10 @@
 		regulator-max-microvolt = <3300000>;
 		vin-supply = <&vcc_sys>;
 	};
-	/* vccio_sd (SD signaling voltage / vqmmc): fixed always-on 3.3V. The HZHY
-	 * dts had a regulator-gpio defaulting to 1.8V (gpios-states=<0> -> the
-	 * 1800000 state), which starves SD init — SD negotiates at 3.3V before any
-	 * UHS switch. rk-forge proved fixed-3.3V works on this board
-	 * (patches/linux/0005-...-MMC-SD-SPI0.patch). */
-	vccio_sd: vccio-sd-regulator {
-		compatible = "regulator-fixed";
-		regulator-name = "vccio_sd";
-		regulator-always-on;
-		regulator-boot-on;
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-	};
+	/* vccio_sd is the fixed always-on 3.3V regulator the dtsi already declares,
+	 * which is what sheet 07 shows: the card rail is VCC3V3, VDD_ADJ_SD_OUT only
+	 * carries R129 100K plus NC/10K jumpers, and no GPIO selects the voltage.
+	 */
 };
 
 &sfc {
@@ -53,14 +44,15 @@
 	};
 };
 
-/* SD slot. The HZHY dts configured cd-gpios=<&gpio1 RK_PA3> + sd-uhs-sdr104 +
- * 1.8V vqmmc — none of which match THIS board: rk-forge proved the SD CD is on
- * gpio0_A2 and the card runs 3.3V-only (patches/linux/0005). Result with the
- * HZHY config: dwmmc_rockchip probed (bound, got CD GPIO, bus=400kHz) but never
- * detected the card -> no mmcblk0 -> rootwait spun forever (log
- * uart_20260719_0007). Rather than chase the CD pin, use broken-cd (driver
- * polls the card, no CD gpio needed) + no-1-8-v + fixed-3.3V vqmmc. The sdmmc
- * clk/cmd/bus4 data pins come from the base dtsi and already probe fine. */
+/* SD slot - this is also the boot medium, so the card must not disappear
+ * under the mounted rootfs. broken-cd made dw_mmc poll at 1 Hz and every
+ * rescan re-negotiated the bus, which is what tore down mmcblk0 in uart.log
+ * ("card e624 removed" at 23.2s, then squashfs/f2fs I/O errors). Sheet 07
+ * puts SDMMC0_DET_L on GPIO1_A3 - floating with the card out, GND with it in,
+ * so the pad needs its internal pull-up - hence a real cd-gpios here, the same
+ * as the NAND variants. max-frequency holds the bus at 25 MHz; the 50 MHz
+ * High-Speed clock the vendor file assumed is not proven on this board.
+ * The card runs 3.3V only, hence no-1-8-v and no sd-uhs-sdr104. */
 &mmc {
 	/delete-property/ no-sd;
 	/delete-property/ ignore-pm-notify;
@@ -72,11 +64,20 @@
 	no-sdio;
 	no-mmc;
 	no-1-8-v;
-	broken-cd;
+	max-frequency = <25000000>;
+	cd-gpios = <&gpio1 RK_PA3 GPIO_ACTIVE_LOW>;
 	disable-wp;
 	pinctrl-names = "default";
-	pinctrl-0 = <&sdmmc_clk_pins &sdmmc_cmd_pins &sdmmc_bus4_pins>;
+	pinctrl-0 = <&sdmmc_clk_pins &sdmmc_cmd_pins &sdmmc_bus4_pins &sd_det>;
 	vmmc-supply = <&vcc_3v3>;
 	vqmmc-supply = <&vccio_sd>;
 	status = "okay";
+};
+
+&pinctrl {
+	sdmmc {
+		sd_det: sd-det {
+			rockchip,pins = <1 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
 };
