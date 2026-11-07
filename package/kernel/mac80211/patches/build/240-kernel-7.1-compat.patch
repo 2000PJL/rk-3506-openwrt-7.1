@@ -1,0 +1,317 @@
+--- a/backport-include/linux/acpi_amd_wbrf.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/linux/acpi_amd_wbrf.h	2026-11-04 10:04:39.417689344 +0800
+@@ -4,8 +4,8 @@
+  * Copyright (C) 2023 Advanced Micro Devices
+  */
+ 
+-#ifndef _ACPI_AMD_WBRF_H
+-#define _ACPI_AMD_WBRF_H
++#ifndef _BACKPORT_ACPI_AMD_WBRF_H
++#define _BACKPORT_ACPI_AMD_WBRF_H
+ 
+ #if LINUX_VERSION_IS_GEQ(6,8,0)
+ #include_next <linux/acpi_amd_wbrf.h>
+@@ -83,4 +83,4 @@
+ }
+ 
+ #endif /* >=6,8,0 */
+-#endif /* _ACPI_AMD_WBRF_H */
++#endif /* _BACKPORT_ACPI_AMD_WBRF_H */
+--- a/backport-include/linux/net.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/linux/net.h	2026-11-04 09:49:24.144955765 +0800
+@@ -2,13 +2,21 @@
+ #define __BACKPORT_LINUX_NET_H
+ #include_next <linux/net.h>
+ #include <linux/static_key.h>
++#include <linux/version.h>
+ 
+-
++/*
++ * Up to Linux 6.15 SOCKWQ_ASYNC_* were macros, so #ifndef could spot them;
++ * 6.16 turned them into an enum, which the preprocessor cannot see. Limit the
++ * old SOCK_ASYNC_* mapping to the kernels that really lack the new names,
++ * otherwise it hijacks the enum that the core's own sock.h relies on.
++ */
++#if LINUX_VERSION_IS_LESS(6,16,0)
+ #ifndef SOCKWQ_ASYNC_NOSPACE
+ #define SOCKWQ_ASYNC_NOSPACE   SOCK_ASYNC_NOSPACE
+ #endif
+ #ifndef SOCKWQ_ASYNC_WAITDATA
+ #define SOCKWQ_ASYNC_WAITDATA   SOCK_ASYNC_WAITDATA
+ #endif
++#endif
+ 
+ #endif /* __BACKPORT_LINUX_NET_H */
+--- a/backport-include/linux/netdevice.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/linux/netdevice.h	2026-11-04 09:49:24.154955384 +0800
+@@ -2,6 +2,11 @@
+ #define __BACKPORT_NETDEVICE_H
+ #include_next <linux/netdevice.h>
+ #include <linux/version.h>
++
++/* Linux 6.15 renamed netdev::netns_local to netns_immutable */
++#if LINUX_VERSION_IS_GEQ(6,15,0)
++#define netns_local netns_immutable
++#endif
+ #include <backport/magic.h>
+ 
+ #if LINUX_VERSION_IS_LESS(4,15,0)
+--- a/backport-include/linux/timer.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/linux/timer.h	2026-11-04 09:49:24.144955765 +0800
+@@ -36,6 +36,13 @@
+ #endif
+ 
+ #ifndef from_timer
++/*
++ * Kernels >= 4.15 provide timer_setup() as a function-like macro. That used
++ * to keep this legacy block out of the way through from_timer(), but Linux
++ * 6.16 removed from_timer() - so guard the open-coded timer_setup() on the
++ * symbol it would shadow.
++ */
++#ifndef timer_setup
+ #define TIMER_DATA_TYPE          unsigned long
+ #define TIMER_FUNC_TYPE          void (*)(TIMER_DATA_TYPE)
+ 
+@@ -56,6 +63,8 @@
+ #endif
+ }
+ 
++#endif /* timer_setup */
++
+ #define from_timer(var, callback_timer, timer_fieldname) \
+ 	container_of(callback_timer, typeof(*var), timer_fieldname)
+ #endif
+@@ -86,4 +95,10 @@
+ }
+ #endif /* < 6.2 */
+ 
++/* Linux 6.15 renamed del_timer()/del_timer_sync() to timer_delete*() */
++#if LINUX_VERSION_IS_GEQ(6,15,0)
++#define del_timer(timer)			timer_delete(timer)
++#define del_timer_sync(timer)		timer_delete_sync(timer)
++#endif
++
+ #endif /* _BACKPORT_TIMER_H */
+--- a/backport-include/net/dropreason.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/net/dropreason.h	2026-11-04 09:49:24.156955307 +0800
+@@ -51,4 +51,15 @@
+ }
+ #endif /* <6.4 */
+ 
++#if LINUX_VERSION_IS_GEQ(6,15,0)
++/*
++ * Linux 6.15 dropped the mac80211 monitor drop-reason subsystem. mac80211
++ * still needs a base that is distinct from its unusable reasons, so keep the
++ * name but put it outside the range the core accepts: drop_monitor then
++ * reports those drops as unspecified instead of colliding with a live
++ * subsystem.
++ */
++#define SKB_DROP_REASON_SUBSYS_MAC80211_MONITOR	SKB_DROP_REASON_SUBSYS_NUM
++#endif
++
+ #endif
+--- a/backport-include/net/sock.h	2024-12-27 00:16:47.000000000 +0800
++++ b/backport-include/net/sock.h	2026-11-04 09:59:32.000618453 +0800
+@@ -23,4 +23,16 @@
+ #define sk_error_report(sk) LINUX_BACKPORT(sk_error_report(sk))
+ #endif /* <= 5.14 */
+ 
++/*
++ * Linux 6.16 retired the SKBTX_WIFI_STATUS tx flag in favour of this
++ * helper; the flag was always derived from the socket option, so reading
++ * the socket flag here keeps the meaning for the older kernels.
++ */
++#if LINUX_VERSION_IS_LESS(6,16,0)
++static inline bool sk_requests_wifi_status(struct sock *sk)
++{
++	return sk && sk_fullsock(sk) && sock_flag(sk, SOCK_WIFI_STATUS);
++}
++#endif
++
+ #endif /* __BACKPORT_NET_SOCK_H */
+--- a/net/mac80211/debugfs_netdev.c	2024-12-27 00:16:46.000000000 +0800
++++ b/net/mac80211/debugfs_netdev.c	2026-11-04 10:01:03.698806022 +0800
+@@ -7,11 +7,17 @@
+ 
+ #include <linux/kernel.h>
+ #include <linux/device.h>
++#include <linux/version.h>
++#if LINUX_VERSION_IS_GEQ(6,12,0)
++/* mac_pton() is only declared by <linux/hex.h> */
++#include <linux/hex.h>
++#endif
+ #include <linux/if.h>
+ #include <linux/if_ether.h>
+ #include <linux/interrupt.h>
+ #include <linux/netdevice.h>
+ #include <linux/rtnetlink.h>
++#include <linux/version.h>
+ #include <linux/slab.h>
+ #include <linux/notifier.h>
+ #include <net/mac80211.h>
+@@ -1027,15 +1033,21 @@
+ void ieee80211_debugfs_rename_netdev(struct ieee80211_sub_if_data *sdata)
+ {
+ 	struct dentry *dir;
++#if LINUX_VERSION_IS_LESS(6,15,0)
+ 	char buf[10 + IFNAMSIZ];
++#endif
+ 
+ 	dir = sdata->vif.debugfs_dir;
+ 
+ 	if (IS_ERR_OR_NULL(dir))
+ 		return;
+ 
++#if LINUX_VERSION_IS_GEQ(6,15,0)
++	debugfs_change_name(dir, "netdev:%s", sdata->name);
++#else
+ 	sprintf(buf, "netdev:%s", sdata->name);
+ 	debugfs_rename(dir->d_parent, dir, dir->d_parent, buf);
++#endif
+ }
+ 
+ void ieee80211_debugfs_recreate_netdev(struct ieee80211_sub_if_data *sdata,
+--- a/net/mac80211/main.c	2026-11-04 09:29:27.114536942 +0800
++++ b/net/mac80211/main.c	2026-11-04 09:49:24.157955269 +0800
+@@ -1718,13 +1718,13 @@
+ }
+ EXPORT_SYMBOL(ieee80211_free_hw);
+ 
+-static const char * const drop_reasons_monitor[] = {
++static const char * const __maybe_unused drop_reasons_monitor[] = {
+ #define V(x)	#x,
+ 	[0] = "RX_DROP_MONITOR",
+ 	MAC80211_DROP_REASONS_MONITOR(V)
+ };
+ 
+-static struct drop_reason_list drop_reason_list_monitor = {
++static struct drop_reason_list __maybe_unused drop_reason_list_monitor = {
+ 	.reasons = drop_reasons_monitor,
+ 	.n_reasons = ARRAY_SIZE(drop_reasons_monitor),
+ };
+@@ -1757,8 +1757,10 @@
+ 	if (ret)
+ 		goto err_netdev;
+ 
++#if LINUX_VERSION_IS_LESS(6,15,0)
+ 	drop_reasons_register_subsys(SKB_DROP_REASON_SUBSYS_MAC80211_MONITOR,
+ 				     &drop_reason_list_monitor);
++#endif
+ 	drop_reasons_register_subsys(SKB_DROP_REASON_SUBSYS_MAC80211_UNUSABLE,
+ 				     &drop_reason_list_unusable);
+ 
+@@ -1777,7 +1779,9 @@
+ 
+ 	ieee80211_iface_exit();
+ 
++#if LINUX_VERSION_IS_LESS(6,15,0)
+ 	drop_reasons_unregister_subsys(SKB_DROP_REASON_SUBSYS_MAC80211_MONITOR);
++#endif
+ 	drop_reasons_unregister_subsys(SKB_DROP_REASON_SUBSYS_MAC80211_UNUSABLE);
+ 
+ 	rcu_barrier();
+--- a/net/mac80211/mesh.c	2024-12-27 00:16:47.000000000 +0800
++++ b/net/mac80211/mesh.c	2026-11-04 10:01:03.697806006 +0800
+@@ -8,6 +8,7 @@
+ 
+ #include <linux/slab.h>
+ #include <linux/unaligned.h>
++#include <net/sock.h>
+ #include "ieee80211_i.h"
+ #include "mesh.h"
+ #include "wme.h"
+@@ -776,7 +777,7 @@
+ 	if (ethertype < ETH_P_802_3_MIN)
+ 		return false;
+ 
+-	if (skb->sk && skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS)
++	if (sk_requests_wifi_status(skb->sk))
+ 		return false;
+ 
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+--- a/net/mac80211/tx.c	2026-11-04 09:29:27.146538337 +0800
++++ b/net/mac80211/tx.c	2026-11-04 09:59:32.002618475 +0800
+@@ -2875,8 +2875,7 @@
+ 	}
+ 
+ 	if (unlikely(!multicast &&
+-		     ((skb->sk &&
+-		       skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS) ||
++		     (sk_requests_wifi_status(skb->sk) ||
+ 		      ctrl_flags & IEEE80211_TX_CTL_REQ_TX_STATUS)))
+ 		info_id = ieee80211_store_ack_skb(local, skb, &info_flags,
+ 						  cookie);
+@@ -3773,7 +3772,7 @@
+ 		return false;
+ 
+ 	/* don't handle TX status request here either */
+-	if (skb->sk && skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS)
++	if (sk_requests_wifi_status(skb->sk))
+ 		return false;
+ 
+ 	if (hdr->frame_control & cpu_to_le16(IEEE80211_STYPE_QOS_DATA)) {
+@@ -4666,8 +4665,7 @@
+ 			memcpy(IEEE80211_SKB_CB(seg), info, sizeof(*info));
+ 	}
+ 
+-	if (unlikely(skb->sk &&
+-		     skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS)) {
++	if (unlikely(sk_requests_wifi_status(skb->sk))) {
+ 		info->status_data = ieee80211_store_ack_skb(local, skb,
+ 							    &info->flags, NULL);
+ 		if (info->status_data)
+--- a/net/wireless/core.c	2026-11-04 09:29:27.125537420 +0800
++++ b/net/wireless/core.c	2026-11-04 09:49:24.154955384 +0800
+@@ -143,10 +143,15 @@
+ 	if (result)
+ 		return result;
+ 
+-	if (!IS_ERR_OR_NULL(rdev->wiphy.debugfsdir))
++	if (!IS_ERR_OR_NULL(rdev->wiphy.debugfsdir)) {
++#if LINUX_VERSION_IS_GEQ(6,15,0)
++		debugfs_change_name(rdev->wiphy.debugfsdir, "%s", newname);
++#else
+ 		debugfs_rename(rdev->wiphy.debugfsdir->d_parent,
+ 			       rdev->wiphy.debugfsdir,
+ 			       rdev->wiphy.debugfsdir->d_parent, newname);
++#endif
++	}
+ 
+ 	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
+ 
+--- a/net/wireless/sysfs.c	2026-11-04 09:29:27.091535939 +0800
++++ b/net/wireless/sysfs.c	2026-11-04 10:01:03.698806022 +0800
+@@ -13,6 +13,11 @@
+ #include <linux/netdevice.h>
+ #include <linux/nl80211.h>
+ #include <linux/rtnetlink.h>
++#include <linux/version.h>
++#if LINUX_VERSION_IS_GEQ(6,12,0)
++/* mac_pton() is only declared by <linux/hex.h> */
++#include <linux/hex.h>
++#endif
+ #include <net/cfg80211.h>
+ #include "sysfs.h"
+ #include "core.h"
+@@ -171,12 +176,21 @@
+ #define WIPHY_PM_OPS NULL
+ #endif
+ 
++#if LINUX_VERSION_IS_GEQ(7,0,0)
++static const struct ns_common *wiphy_namespace(const struct device *d)
++{
++	struct wiphy *wiphy = container_of(d, struct wiphy, dev);
++
++	return to_ns_common(wiphy_net(wiphy));
++}
++#else
+ static const void *wiphy_namespace(const struct device *d)
+ {
+ 	struct wiphy *wiphy = container_of(d, struct wiphy, dev);
+ 
+ 	return wiphy_net(wiphy);
+ }
++#endif
+ 
+ struct class ieee80211_class = {
+ 	.name = "ieee80211",
