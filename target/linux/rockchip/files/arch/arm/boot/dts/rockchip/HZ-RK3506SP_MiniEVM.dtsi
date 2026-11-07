@@ -32,7 +32,7 @@
 
 	memory@0 {
 		device_type = "memory";
-		reg = <0x0 0x20000000>;
+		reg = <0x0 0x10000000>;
 	};
 
 	reserved-memory {
@@ -47,10 +47,10 @@
 		 * then rejects the access as a precise external abort.
 		 * Mirrors the vendor rk3506 DT's trust@0 reservation. */
 		trust@0 {
-			/* OP-TEE reports 0x62000 bytes, but the secure DRAM firewall may
-			 * protect low memory at a coarser granularity.  Keep Linux and the
-			 * zImage output above the first 2 MiB. */
-			reg = <0x0 0x200000>;
+			/* OP-TEE reports 0x62000 bytes, but the secure DRAM firewall
+			 * protects low memory at 4 MiB granularity on this board.
+			 * Reserve 4 MiB to avoid handing secure pages to userspace. */
+			reg = <0x0 0x400000>;
 		};
 	};
 
@@ -232,23 +232,29 @@
 };
 
 &usb2phy {
-	status = "disabled";
+	status = "okay";
 };
 
 &u2phy_otg0 {
-	status = "disabled";
+	status = "okay";
+	/* VBUS supply controlled by GPIO PA2 (vcc5v0_otg0 regulator) */
+	vbus-supply = <&vcc5v0_otg0>;
 };
 
 &u2phy_otg1 {
-	status = "disabled";
+	status = "okay";
+	/* VBUS supply controlled by GPIO PA1 (vcc5v0_otg1 regulator) */
+	vbus-supply = <&vcc5v0_otg1>;
 };
 
 &usb20_otg0 {
-	status = "disabled";
+	status = "okay";
+	dr_mode = "host";
 };
 
 &usb20_otg1 {
-	status = "disabled";
+	status = "okay";
+	dr_mode = "host";
 };
 
 &gmac0 {

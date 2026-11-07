@@ -44,6 +44,41 @@
 		spi-max-frequency = <50000000>;
 		spi-rx-bus-width = <4>;
 		spi-tx-bus-width = <1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@400000 {
+				label = "uboot";
+				reg = <0x400000 0x400000>;
+			};
+			partition@800000 {
+				label = "misc";
+				reg = <0x800000 0x100000>;
+			};
+			partition@900000 {
+				label = "vnvm";
+				reg = <0x900000 0x40000>;
+			};
+			partition@940000 {
+				label = "recovery";
+				reg = <0x940000 0xe00000>;
+			};
+			partition@1740000 {
+				label = "boot";
+				reg = <0x1740000 0x1000000>;
+			};
+			partition@2740000 {
+				label = "rootfs";
+				reg = <0x2740000 0xae00000>;
+			};
+			partition@d540000 {
+				label = "userdata";
+				reg = <0xd540000 0x12ac0000>;
+			};
+		};
 	};
 };
 

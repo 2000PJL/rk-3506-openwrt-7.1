@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2025 HZHY Electronics Co., Ltd.
+ * HZ-RK3506SP MiniEVM — SPI-NAND boot variant, 256 MiB NAND (W25N02KV).
+ *
+ * Partition layout scaled for a 256 MiB (0x10000000) SPI-NAND:
+ *   uboot     @ 0x00400000  (4 MiB)
+ *   misc      @ 0x00800000  (1 MiB)
+ *   vnvm      @ 0x00900000  (256 KiB)
+ *   boot      @ 0x00940000  (16 MiB)
+ *   rootfs    @ 0x01940000  (230.75 MiB)  <- ubi.mtd=4
+ *   (no recovery / userdata: 256 MiB leaves no room)
+ */
+
+/dts-v1/;
+#include "HZ-RK3506SP_MiniEVM.dtsi"
+
+/ {
+	model = "HZ-RK3506SP_MiniEVM NAND 256MiB";
+	compatible = "rockchip,rk3506-evb1-v10", "rockchip,rk3506";
+	chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xff0a0000 console=ttyS0,1500000 ubi.mtd=4 root=ubi0:rootfs rw rootfstype=ubifs rootwait net.ifnames=0";
+	};
+	/delete-node/ sdio-pwrseq;
+	vcc_3v3: vcc-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_3v3";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vcc_sys>;
+	};
+	vccio_sd: vccio-sd-regulator {
+		compatible = "regulator-gpio";
+		regulator-name = "vccio-sd-regulator";
+		gpio = <&gpio4 RK_PB2 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&vccio_sd_gpio>;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <3300000>;
+		gpios-states = <0>;
+		states = <3300000 0x1>, <1800000 0x0>;
+	};
+};
+
+&sfc {
+	status = "okay";
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		spi-max-frequency = <50000000>;
+		spi-rx-bus-width = <4>;
+		spi-tx-bus-width = <1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@400000 {
+				label = "uboot";
+				reg = <0x400000 0x400000>;
+			};
+			partition@800000 {
+				label = "misc";
+				reg = <0x800000 0x100000>;
+			};
+			partition@900000 {
+				label = "vnvm";
+				reg = <0x900000 0x40000>;
+			};
+			partition@940000 {
+				label = "boot";
+				reg = <0x940000 0x1000000>;
+			};
+			partition@1940000 {
+				label = "rootfs";
+				reg = <0x1940000 0xe6c0000>;
+			};
+		};
+	};
+};
+
+&mmc {
+	/delete-property/ no-sd;
+	/delete-property/ ignore-pm-notify;
+	/delete-property/ keep-power-in-suspend;
+	/delete-property/ non-removable;
+	/delete-property/ mmc-pwrseq;
+	cap-mmc-highspeed;
+	cap-sd-highspeed;
+	sd-uhs-sdr104;
+	bus-width = <4>;
+	no-sdio;
+	no-mmc;
+	cd-gpios = <&gpio1 RK_PA3 GPIO_ACTIVE_LOW>;
+	disable-wp;
+	pinctrl-names = "default";
+	pinctrl-0 = <&sdmmc_clk_pins &sdmmc_cmd_pins &sdmmc_bus4_pins &sd_det>;
+	vmmc-supply = <&vcc_3v3>;
+	vqmmc-supply = <&vccio_sd>;
+	status = "okay";
+};
+
+&pinctrl {
+	sdmmc {
+		vccio_sd_gpio: vccio-sd-gpio {
+			rockchip,pins = <4 RK_PB2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+		sd_det: sd-det {
+			rockchip,pins = <1 RK_PA3 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+};
