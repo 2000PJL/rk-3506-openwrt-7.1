@@ -237,24 +237,37 @@
 
 &u2phy_otg0 {
 	status = "okay";
-	/* VBUS supply controlled by GPIO PA2 (vcc5v0_otg0 regulator) */
-	vbus-supply = <&vcc5v0_otg0>;
 };
 
 &u2phy_otg1 {
 	status = "okay";
-	/* VBUS supply controlled by GPIO PA1 (vcc5v0_otg1 regulator) */
-	vbus-supply = <&vcc5v0_otg1>;
+	/* Consumed by the generic PHY core (phy-core.c), which enables it as
+	 * soon as the PHY is powered on.
+	 */
+	phy-supply = <&vcc5v0_otg1>;
 };
 
 &usb20_otg0 {
 	status = "okay";
 	dr_mode = "host";
+	/* Sheet 06: GPIO PA2 switches U5, the load switch feeding the Type-C
+	 * VBUS pin. dwc2 reads vbus-supply from the controller node and enables
+	 * it while the root hub is up, which is the only thing that turns the
+	 * rail on: vcc5v0_otg0 has no regulator-boot-on/always-on, so without
+	 * this the port never gets 5 V. The vendor kernel did the same job from
+	 * phy-rockchip-inno-usb2.c, but mainline 7.1 has no regulator support
+	 * in that driver, so a vbus-supply on &u2phy_otg0 would be a no-op.
+	 */
+	vbus-supply = <&vcc5v0_otg0>;
 };
 
 &usb20_otg1 {
 	status = "okay";
 	dr_mode = "host";
+	/* vcc5v0_otg1 is regulator-always-on, so this only takes a reference;
+	 * regulator_disable() on an always-on rail is a no-op.
+	 */
+	vbus-supply = <&vcc5v0_otg1>;
 };
 
 /* Sheet 03: YT8512H on the rmii0 pin group (GPIO2 bank). The 50 MHz RMII clock
