@@ -29,6 +29,11 @@ CONFIG_BUSYBOX_CONFIG_MKFS_MINIX=y
 #
 # DNS / DHCP：dnsmasq-full 提供 DHCPv6、DNSSEC、nftset 联动
 #
+# dnsmasq has to stay =m. include/target.mk DEFAULT_PACKAGES.router lists it, so an
+# unmentioned seed line silently becomes =y; dnsmasq-full only PROVIDES:=dnsmasq and
+# declares no CONFLICTS, so kconfig lets both land in the rootfs and they collide on
+# /etc/dnsmasq.conf and /etc/init.d/dnsmasq during make package/install.
+CONFIG_PACKAGE_dnsmasq=m
 CONFIG_PACKAGE_dnsmasq-full=y
 CONFIG_PACKAGE_dnsmasq_full_auth=y
 CONFIG_PACKAGE_dnsmasq_full_conntrack=y

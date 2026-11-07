@@ -406,6 +406,12 @@ jobs:
             echo "================================"
             echo "Build failed!"
             echo "================================"
+            # The default shell here is `bash -eo pipefail`, so the grep below -- which
+            # finds nothing unless a package compile is what broke -- aborts the whole
+            # step and the verbose re-runs never happen. That is how run #30 died at
+            # `make package/install` with no error text anywhere: the diagnostics
+            # killed themselves. Diagnostics must not be able to fail the build.
+            set +e
             # Identify the failing package so it can be re-run verbosely.
             pkg=$(grep -o 'ERROR: package/[^ ]* failed to build' /tmp/build-main.log | head -1 | sed 's|ERROR: package/||; s| failed to build||')
             echo "Failing package: ${pkg:-unknown}"
