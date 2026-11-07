@@ -1,0 +1,33 @@
+name: Delete Old Workflows
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 10 * * 4
+permissions:
+  actions: write        # 删除 Workflow runs 需要此权限
+  contents: write       # 删除 Releases 和 Tags 需要此权限
+
+jobs:
+  Cleaning:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - name: Delete Old Workflows
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        retain_days: 7
+        # Keep the three newest runs whatever their age: the run list is the only
+        # place the build logs and the firmware artifacts of a release live.
+        keep_minimum_runs: 3
+
+    - name: Delete Old Releases
+      uses: dev-drprasad/delete-older-releases@master
+      with:
+        # Sorted by release creation date, not by the version in the tag name, so a
+        # rebuild of an older commit is still "recent" and gets kept.
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

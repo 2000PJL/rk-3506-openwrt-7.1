@@ -1,0 +1,758 @@
+#
+# OpenWrt CI for RK3506-MiniEVM
+#
+name: OpenWrt-CI for RK3506-MiniEVM
+
+on:
+  schedule:
+    - cron: 0 20 * * 1,4
+  workflow_dispatch:
+    inputs:
+      cache_generation:
+        description: >-
+          Cache key generation. Keep 2 for normal builds. Bump it (3, 4, ...) to re-snapshot
+          every category: the previous entries are still restored through restore-keys, so the
+          run starts warm and writes fresh entries under the new key. Use this to refresh the
+          ccache snapshot (an exact-hit cache is never re-saved) or to re-bake an entry after
+          changing a cache key. For a genuinely cold build, delete the entries under
+          Actions -> Caches instead.
+        required: false
+        default: '2'
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  TZ: Asia/Shanghai
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: RK3506-MiniEVM
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  check:
+    name: Check if build needed
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      commitHash: ${{ steps.getHash.outputs.commitHash }}
+    steps:
+      - name: Get latest commit hash
+        id: getHash
+        run: |
+          COMMIT_HASH=$(git ls-remote ${{ github.server_url }}/${{ github.repository }} refs/heads/${{ github.ref_name }} | cut -f1)
+          echo "commitHash=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "Latest commit: $COMMIT_HASH"
+
+      - name: Check if already built
+        id: cacheHash
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/cache/restore@v4
+        with:
+          path: .commitHash
+          key: built-${{ steps.getHash.outputs.commitHash }}
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger, always build."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          elif [ "${{ steps.cacheHash.outputs.cache-hit }}" = "true" ]; then
+            echo "Commit ${{ steps.getHash.outputs.commitHash }} was already built. Skipping."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "New commit detected, build needed."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build_openwrt:
+    name: Build OpenWrt Firmware for RK3506-MiniEVM
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      DEVICE_TARGET: rockchip
+      DEVICE_SUBTARGET: rk3506
+      # Empty for scheduled runs, so the expression falls back to generation 2 and the
+      # keys stay byte-identical to the ones a plain dispatch produces. Generation 2
+      # retires the gen-1 package caches that were built while dnsmasq was still =y:
+      # those snapshots carry a pkginfo/dnsmasq.nodhcpv6.install stamp that puts the
+      # plain dnsmasq package back into the rootfs next to dnsmasq-full.
+      CACHE_GEN: ${{ github.event.inputs.cache_generation || '2' }}
+
+    steps:
+      - name: Checkout OpenWrt
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Get Source Info
+        run: |
+          echo "SOURCE_REPO=${{ github.repository }}" >> $GITHUB_ENV
+          COMMIT_AUTHOR=$(git log -1 --format="作者: %an <%ae>" 2>/dev/null || echo "作者: unknown")
+          echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
+          COMMIT_DATE=$(git log -1 --format="时间: %ci" 2>/dev/null || echo "时间: unknown")
+          echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
+          COMMIT_MESSAGE=$(git log -1 --format="内容: %s" 2>/dev/null || echo "内容: unknown")
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
+          COMMIT_HASH=$(git log -1 --format="hash: %H" 2>/dev/null || echo "hash: unknown")
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+          COMMIT_SHORT_HASH=$(git log -1 --format="%h" 2>/dev/null || echo "unknown")
+          echo "COMMIT_SHORT_HASH=$COMMIT_SHORT_HASH" >> $GITHUB_ENV
+          # Version stamp is derived from the *commit* timestamp, not the build clock,
+          # so it sorts correctly and a rebuild of the same commit yields the same version.
+          COMMIT_TS=$(git log -1 --format=%ct 2>/dev/null || echo "")
+          [ -n "$COMMIT_TS" ] || COMMIT_TS=$(date +%s)
+          BUILD_STAMP=$(date -u -d "@$COMMIT_TS" +%Y%m%d.%H%M%S)
+          echo "BUILD_STAMP=$BUILD_STAMP" >> $GITHUB_ENV
+          echo "IMAGE_VERSION=${BUILD_STAMP}-${COMMIT_SHORT_HASH}" >> $GITHUB_ENV
+          # Reproducible timestamps for images/partition GUIDs and packaged files.
+          echo "SOURCE_DATE_EPOCH=$COMMIT_TS" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
+          echo "BUILD_DATE_TAG=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          echo "FILE_DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+      - name: Check Server Performance
+        run: |
+          echo "警告⚠"
+          echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+          echo -e "已知CPU型号(降序): 7763，8370C，8272CL，8171M，E5-2673\n"
+          echo "--------------------------CPU信息--------------------------"
+          echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+          echo "CPU核心数量: $(nproc)"
+          echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
+          echo "--------------------------内存信息--------------------------"
+          echo "已安装内存详细信息:"
+          echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
+          echo "--------------------------硬盘信息--------------------------"
+          echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+      - name: Restore apt archive cache
+        id: aptcache
+        uses: actions/cache/restore@v4
+        with:
+          path: .apt/archives
+          # Carries ${CACHE_GEN} like every other key below, so the cache-pruning step at
+          # the end of the job recognises it as current. A key without the generation
+          # component would be pruned the moment it was written.
+          key: apt-archives-${{ runner.os }}-${{ env.CACHE_GEN }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
+          restore-keys: |
+            apt-archives-${{ runner.os }}-
+
+      - name: Space cleanup and Initialization environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          # Point apt's download directory into the workspace. actions/cache tars
+          # relative to GITHUB_WORKSPACE as the unprivileged runner user, so it can
+          # neither restore into nor reliably read the root-owned
+          # /var/cache/apt/archives. Dir::Cache is the parent of Dir::Cache::archives.
+          mkdir -p "$GITHUB_WORKSPACE/.apt/archives/partial"
+          echo "Dir::Cache \"$GITHUB_WORKSPACE/.apt\";" \
+            | sudo tee /etc/apt/apt.conf.d/99openwrt-cache-archives > /dev/null
+
+          # This step was 528s of a 1290s warm run, so time each phase rather than
+          # guessing which one is slow.
+          t0=$SECONDS
+          t=$SECONDS
+          docker image prune -f
+          echo "PHASE docker-prune: $((SECONDS - t))s"; t=$SECONDS
+
+          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+          sudo apt-mark hold grub-efi-amd64-signed
+          echo "PHASE rm-and-hold: $((SECONDS - t))s"; t=$SECONDS
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          echo "PHASE apt-update: $((SECONDS - t))s"; t=$SECONDS
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y --ignore-missing purge azure-cli* docker* ghc* zulu* llvm* firefox google* dotnet* powershell* openjdk* mysql* php* mongodb* snap* || true
+          echo "PHASE apt-purge: $((SECONDS - t))s"; t=$SECONDS
+
+          # Each remaining entry has an in-tree consumer:
+          #   swig       include/u-boot.mk's TestHostCommand, needed to build
+          #              uboot-rockchip's libfdt python bindings.
+          #   dtc, squashfs-tools, xxd, texinfo(makeinfo), help2man, cmake,
+          #   ninja-build, pkgconf, libtool, bison, flex, gettext, gperf,
+          #   autopoint, intltool   referenced by tools/, include/ or target/.
+          # Removed, with the evidence:
+          #   clang, llvm   CONFIG_USE_LLVM_HOST is unset, so include/bpf.mk never
+          #                 takes the `command -v clang` branch; the BPF toolchain
+          #                 comes from tools/llvm-bpf. The purge above deletes the
+          #                 runner image's llvm* and openjdk*, and the old list
+          #                 then reinstalled llvm-18 (24 MB) through clang/llvm
+          #                 and openjdk-21-jre-headless (44 MB) through antlr3.
+          #   antlr3, ack, asciidoc, lrzsz, msmtp, scons, upx-ucl, vim, xmlto
+          #                 zero references anywhere in include/ tools/ toolchain/
+          #                 target/ scripts/ package/.
+          #   genisoimage   only target/linux/x86.
+          #   qemu-utils    only Build/vdi and Build/vmdk, which rockchip's image
+          #                 recipes never call.
+          #   p7zip*        only CONFIG_TARGET_realtek and BUILD_ALL_HOST_TOOLS,
+          #                 and tools/7z builds its own 7zr when either is on.
+          #   subversion    every feed in feeds.conf.default is src-git.
+          #   uglifyjs      LuCI minifies with the in-tree jsmin host tool behind
+          #                 CONFIG_LUCI_JSMIN, which this defconfig leaves off.
+          # haveged stays: it is not a build dependency, but it is 32 KB and its
+          # absence would show up as an unexplained stall rather than an error.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y install autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool ninja-build patch pkgconf python3 python3-pyelftools python3-setuptools rsync squashfs-tools swig texinfo unzip wget xxd zlib1g-dev
+          echo "PHASE apt-install: $((SECONDS - t))s"; t=$SECONDS
+
+          sudo systemctl daemon-reload
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -y autoremove --purge
+          echo "PHASE apt-autoremove: $((SECONDS - t))s"; t=$SECONDS
+
+          # No `apt-get clean`: the .debs are the payload of the cache saved below.
+          sudo timedatectl set-timezone "$TZ"
+          echo "PHASE timezone-and-inventory: $((SECONDS - t))s"
+          echo "apt archives kept for caching: $(find .apt/archives -maxdepth 1 -name '*.deb' | wc -l) files, $(du -sh .apt/archives | cut -f1)"
+          echo "PHASE step5-total: $((SECONDS - t0))s"
+
+      - name: Save apt archive cache
+        if: always() && steps.aptcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .apt/archives
+          key: apt-archives-${{ runner.os }}-${{ env.CACHE_GEN }}-${{ hashFiles('.github/workflows/github-ci.yml') }}
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+
+      - name: Get Device Info
+        run: |
+          if [ -f config/hz-sp-rk3506-MiniEVM_defconfig ]; then
+            cp config/hz-sp-rk3506-MiniEVM_defconfig .config
+            USE_SEED=yes
+          else
+            echo "Warning: config/hz-sp-rk3506-MiniEVM_defconfig not found, using default"
+            USE_SEED=
+          fi
+          make defconfig 2>/dev/null
+          # CONFIG_CCACHE is what makes rules.mk prefix ccache onto TARGET_CC/HOSTCC and
+          # CONFIG_AUTOREMOVE is what makes .prepared_* stamp names content-based; both are
+          # only visible when CONFIG_DEVEL=y, and all three now come from the seed defconfig.
+          # Assert they survived: a silently dropped symbol costs build time and nothing else,
+          # which is exactly how the ccache one went unnoticed.
+          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE; do
+            if [ -n "$USE_SEED" ] && ! grep -q "^${sym}=y" .config; then
+              echo "::error::${sym}=y is not in .config - OpenWrt loses ccache or warm-rebuild support"
+              grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)' .config || echo '  (none of them in .config)'
+              exit 1
+            fi
+          done
+          DEVICE_TARGET=$(grep CONFIG_TARGET_BOARD .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rockchip")
+          DEVICE_SUBTARGET=$(grep CONFIG_TARGET_SUBTARGET .config | awk -F '"' '{print $2}' 2>/dev/null || echo "rk3506")
+          echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+          echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+      - name: Install ccache
+        run: sudo apt-get install -y ccache
+        shell: bash
+
+      # A key must hash only files the build never rewrites, or the save step computes a
+      # different key than the restore step did and the entry can never be hit exactly.
+      # That is why no key below contains .config: `feeds install` regenerates it.
+      - name: Restore feeds cache
+        id: feeds
+        uses: actions/cache/restore@v4
+        with:
+          path: feeds
+          key: feeds-${{ env.CACHE_GEN }}-${{ hashFiles('feeds.conf.default') }}
+          restore-keys: |
+            feeds-
+
+      - name: Update and install feeds
+        run: |
+          if [ "${{ steps.feeds.outputs.cache-hit }}" != "true" ]; then
+            echo "Feeds cache miss, updating from remote..."
+            ./scripts/feeds update -a
+          else
+            echo "Feeds cache hit, skipping update."
+          fi
+          ./scripts/feeds install -a
+          # "Get Device Info" copies the seed and runs make defconfig before any feed
+          # exists, so tmp/.config-package.in has no feed symbols yet and kconfig drops
+          # every one of them: 421 requested packages became 178, and all of LuCI with
+          # them. refresh_config() only reruns defconfig on the surviving .config, so it
+          # cannot bring them back. Re-apply the seed now that feeds/*.index exist.
+          if [ -f config/hz-sp-rk3506-MiniEVM_defconfig ]; then
+            cp config/hz-sp-rk3506-MiniEVM_defconfig .config
+            make defconfig
+          fi
+          # A silently dropped symbol costs a whole build's worth of time, or in LuCI's
+          # case the entire web interface, so assert the ones that must survive.
+          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE CONFIG_FEED_luci CONFIG_PACKAGE_luci; do
+            if ! grep -q "^${sym}=y" .config; then
+              echo "::error::${sym}=y is not in .config after feeds install"
+              grep -E "^${sym}[= ]" .config || echo "  (absent from .config)"
+              exit 1
+            fi
+          done
+          # dnsmasq must be off, and =m does not count as off here: make's
+          # $(if $(CONFIG_PACKAGE_dnsmasq),...) treats "m" as true, so tmp/.packagedeps
+          # keeps the nodhcpv6 variant and PACKAGE_INSTALL_FILES references
+          # pkginfo/dnsmasq.nodhcpv6.install. A stale copy of that stamp restored from the
+          # packages cache re-adds dnsmasq to the opkg install list, where it collides with
+          # dnsmasq-full. Require the explicit =n spelling.
+          if ! grep -qx '# CONFIG_PACKAGE_dnsmasq is not set' .config; then
+            echo "::error::dnsmasq must be disabled (=n); =m still lets a cached nodhcpv6 install stamp leak into the rootfs"
+            grep -E '^CONFIG_PACKAGE_dnsmasq[= ]' .config || echo "  (dnsmasq symbols absent from .config)"
+            exit 1
+          fi
+          if ! grep -qx 'CONFIG_PACKAGE_dnsmasq-full=y' .config; then
+            echo "::error::dnsmasq-full must be =y or the image ships without DNS/DHCP"
+            exit 1
+          fi
+          grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE|FEED_luci|PACKAGE_luci)=' .config
+          grep -E '^# CONFIG_PACKAGE_dnsmasq is not set|^CONFIG_PACKAGE_dnsmasq-full=' .config
+
+      - name: Restore toolchain cache
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            dl
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'config/hz-sp-rk3506-MiniEVM_defconfig', 'rules.mk', 'feeds.conf.default') }}
+          restore-keys: |
+            toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Restore tools cache
+        id: tools
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build_dir/host*
+            staging_dir/host*
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', 'config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+          restore-keys: |
+            ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-
+
+      - name: Configure ccache
+        run: |
+          mkdir -p .ccache
+          cat > .ccache/ccache.conf << EOF
+          max_size = 1.0G
+          base_dir = $GITHUB_WORKSPACE
+          cache_dir_levels = 2
+          compression = true
+          compression_level = 5
+          sloppiness = pch_defines,time_macros
+          hash_dir = false
+          temporary_dir = /tmp/ccache-temp
+          EOF
+          sed -i 's/^[[:space:]]*//' .ccache/ccache.conf
+          # rules.mk exports CCACHE_DIR itself ($(TOPDIR)/.ccache); this only lines up the
+          # standalone ccache commands with the same directory.
+          echo "CCACHE_DIR=$PWD/.ccache" >> $GITHUB_ENV
+          echo "=== ccache directory right after restore ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+        shell: bash
+
+      - name: Restore packages cache
+        id: packages
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            staging_dir/target-*
+            build_dir/target-*
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
+          # restore-keys normally stop before the config hash so a config change starts
+          # warm. They must not stop before the generation: otherwise a config change can
+          # fall back to the newest package cache of *any* generation, including a snapshot
+          # whose pkginfo still holds install stamps from an incompatible selection. That is
+          # exactly how dnsmasq.nodhcpv6.install (content: "dnsmasq") survived a seed fix and
+          # was installed next to dnsmasq-full.
+          restore-keys: |
+            packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-
+
+      # Re-date every restored build tree to "now": without it, every restored stamp is older
+      # than the fresh checkout and make rebuilds the world even when restore-keys brought the
+      # content back. This cannot ship stale output, because the rebuild decision never relies
+      # on mtime alone: the stamp *file name* carries a source fingerprint
+      # (include/package.mk:114, include/kernel-build.mk:13 - hashed over paths and mtimes, so a
+      # new checkout is always looked up under a name the restored tree has never seen), and the
+      # dtb, kernel .configured/.image and FIT rules are FORCE'd
+      # (include/image.mk:668, include/kernel-build.mk:129,144).
+      - name: Repair timestamps of restored build trees
+        run: |
+          echo "Re-dating restored build trees..."
+          for d in dl build_dir/toolchain-* staging_dir/toolchain-* \
+                   build_dir/host* staging_dir/host* \
+                   staging_dir/target-* build_dir/target-*; do
+            find "$d" -type f -exec touch {} + 2>/dev/null || true
+          done
+          echo "=== restored tree sizes after re-dating ==="
+          du -sh build_dir staging_dir dl 2>/dev/null || true
+          date '+re-dated at %H:%M:%S'
+
+      - name: Download packages
+        run: make download -j16
+
+      - name: Compile firmware
+        id: compile
+        run: |
+          set -o pipefail
+          export CCACHE_DIR=$PWD/.ccache
+          echo "=== ccache directory size (before build) ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+          # Zero the counters: everything printed after the build then describes this
+          # run only, including the uncacheable reasons (linking is never cached).
+          echo "=== ccache counters up to now (then cleared) ==="
+          ccache -z
+          echo "================================"
+          echo "Starting compilation with $(nproc) threads"
+          echo "================================"
+          # scripts/getver.sh:try_version() reads TOPDIR/version first, so this file
+          # becomes REVISION -> /etc/openwrt_release and *.buildinfo on the device.
+          echo "$IMAGE_VERSION" > version
+          echo "REVISION for this build: $(cat version)"
+          echo "SOURCE_DATE_EPOCH: ${SOURCE_DATE_EPOCH:-unset}"
+          if ! make -j$(($(nproc) + 2)) 2>&1 | tee /tmp/build-main.log; then
+            echo "================================"
+            echo "Build failed!"
+            echo "================================"
+            # The default shell here is `bash -eo pipefail`, so the grep below -- which
+            # finds nothing unless a package compile is what broke -- aborts the whole
+            # step and the verbose re-runs never happen. That is how run #30 died at
+            # `make package/install` with no error text anywhere: the diagnostics
+            # killed themselves. Diagnostics must not be able to fail the build.
+            set +e
+            # Identify the failing package so it can be re-run verbosely.
+            pkg=$(grep -o 'ERROR: package/[^ ]* failed to build' /tmp/build-main.log | head -1 | sed 's|ERROR: package/||; s| failed to build||')
+            echo "Failing package: ${pkg:-unknown}"
+            # The kernel make runs with V='' unless OPENWRT_VERBOSE contains 'c',
+            # so both its normal output and the reason it failed are suppressed.
+            # Re-run the failing package with V=s to surface the real error.
+            if [ -n "$pkg" ]; then
+              echo "================================"
+              echo "=== Verbose re-run: package/${pkg} ==="
+              echo "================================"
+              make package/${pkg}/compile V=s 2>&1 | tee /tmp/pkg-verbose.log | tail -150
+              echo "================================"
+              echo "=== Last 80 lines of package re-run ==="
+              tail -80 /tmp/pkg-verbose.log || true
+            fi
+            echo "================================"
+            echo "=== Full re-run with -j1 V=s (cross-check) ==="
+            echo "================================"
+            make package/install -j1 V=s 2>&1 | tee /tmp/build-verbose.log | tail -100
+            echo "================================"
+            echo "=== Searching for errors in verbose log ==="
+            # Broaden beyond the opkg/rootfs patterns: a kernel or C compile
+            # failure (e.g. "error:", "make[N]: ***", "undefined reference")
+            # would otherwise be swallowed by the parallel build's output.
+            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
+            echo "================================"
+            echo "=== Last 60 lines of -j1 verbose log (error context) ==="
+            tail -60 /tmp/build-verbose.log || true
+            echo "================================"
+            exit 1
+          fi
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "================================"
+          echo "ccache statistics (this run only)"
+          echo "================================"
+          ccache -s -v
+          echo "=== Final Cache Directory Size ==="
+          du -sh .ccache 2>/dev/null || echo "0"
+
+      - name: Save built commit hash
+        if: steps.compile.outputs.status == 'success'
+        run: echo "${{ needs.check.outputs.commitHash }}" > .commitHash
+
+      - name: Save built commit hash cache
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: .commitHash
+          key: built-${{ needs.check.outputs.commitHash }}
+
+      - name: Save feeds cache
+        if: always() && steps.feeds.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: feeds
+          key: feeds-${{ env.CACHE_GEN }}-${{ hashFiles('feeds.conf.default') }}
+
+      - name: Save toolchain cache
+        if: always() && steps.toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            dl
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('toolchain/**', 'include/kernel-*', 'include/kernel.mk', 'include/prereq-build.mk', 'config/Config*', 'config/hz-sp-rk3506-MiniEVM_defconfig', 'rules.mk', 'feeds.conf.default') }}
+
+      - name: Save tools cache
+        if: always() && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build_dir/host*
+            staging_dir/host*
+          key: tools-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('tools/**', 'include/host-build.mk', 'include/download.mk', 'include/unpack.mk', 'rules.mk', 'config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Save ccache
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/hz-sp-rk3506-MiniEVM_defconfig') }}
+
+      - name: Save packages cache
+        if: always() && steps.packages.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            staging_dir/target-*
+            build_dir/target-*
+          key: packages-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.CACHE_GEN }}-${{ hashFiles('config/**', 'include/**', 'rules.mk') }}
+
+      # The runner's log/status channel has died on three consecutive build jobs
+      # (#27/#28/#29), and a dead channel means the job's log blob is never uploaded
+      # at all -- cancelling only finalises the job, it does not produce a log. Run
+      # #27 proves artifact upload survives that failure: it published three
+      # artifacts and a Release while its step timeline stayed frozen at step 6.
+      # So route failure evidence through artifacts rather than through the log.
+      # Placed before the success-gated steps so it runs on a failed compile too.
+      - name: Collect build evidence
+        if: always()
+        run: |
+          mkdir -p ./artifact/evidence
+          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log; do
+            [ -f "$f" ] && cp -f "$f" ./artifact/evidence/ 2>/dev/null
+          done
+          [ -d bin/.logs ] && cp -rf bin/.logs ./artifact/evidence/host-logs 2>/dev/null
+          [ -f .config ] && cp -f .config ./artifact/evidence/config.final 2>/dev/null
+          {
+            echo "=== compile step output status ==="
+            echo "status='${{ steps.compile.outputs.status }}'  (empty means the compile step did not report success)"
+            echo
+            echo "=== feeds revisions actually used (CI restores these from cache) ==="
+            for d in feeds/*; do
+              [ -d "$d/.git" ] && echo "$(basename $d) $(git -C $d rev-parse --short HEAD) $(git -C $d log -1 --format=%cI)"
+            done
+            echo
+            echo "=== package selection counts ==="
+            echo "seed requested : $(grep -c '^CONFIG_PACKAGE_.*=y' config/hz-sp-rk3506-MiniEVM_defconfig)"
+            echo "final .config  : $(grep -c '^CONFIG_PACKAGE_.*=y' .config)"
+            echo "luci selected  : $(grep -c '^CONFIG_PACKAGE_luci.*=y' .config)"
+            echo
+            echo "=== disk ==="
+            df -h
+            echo
+            echo "=== top-level tree sizes ==="
+            du -sh build_dir staging_dir .ccache bin dl 2>/dev/null
+            echo
+            echo "=== ccache stats ==="
+            ccache -s 2>/dev/null | head -25
+            echo
+            echo "=== newest build_dir work dirs (what was in flight) ==="
+            find build_dir -maxdepth 2 -type d -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -15
+            echo
+            echo "=== tail of build-main.log ==="
+            tail -80 /tmp/build-main.log 2>/dev/null
+          } > ./artifact/evidence/state.txt 2>&1
+          ls -la ./artifact/evidence/
+          true
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_evidence_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Verify firmware metadata
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          echo "=== Verifying firmware metadata ==="
+          for img in $(find ./bin/targets/ -name "*.img.gz" 2>/dev/null); do
+            echo "Checking: $img"
+            if fwtool -q -i /dev/null "$img" 2>/dev/null; then
+              echo "  -> Metadata: OK"
+            else
+              echo "  -> Metadata: MISSING!"
+              echo "WARNING: $img does not contain firmware metadata"
+            fi
+          done
+
+      - name: Check disk usage
+        run: |
+          echo "=== Disk usage after build ==="
+          du -sh build_dir .ccache bin/ 2>/dev/null || true
+          df -h /
+
+      - name: Prepare artifact
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          mkdir -p ./artifact/package
+          mkdir -p ./artifact/buildinfo
+          rm -rf $(find ./bin/targets/ -type d -name "packages") 2>/dev/null || true
+          cp -rf $(find ./bin/packages/ -type f -name "*.ipk" 2>/dev/null) ./artifact/package/ 2>/dev/null || true
+          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest" 2>/dev/null) ./artifact/buildinfo/ 2>/dev/null || true
+          FIRMWARE_PATH=$(find ./bin/targets/ -type d -name "packages" -prune -o -type f \( -name "*.img.gz" -o -name "*.img" -o -name "*.bin" \) 2>/dev/null | head -1 | xargs dirname 2>/dev/null || echo "./bin/targets/")
+          echo "FIRMWARE_PATH=$FIRMWARE_PATH" >> $GITHUB_ENV
+          # The image Makefile has no version in the file names (this tree does not
+          # define CONFIG_VERSION_FILENAMES), so prefix them here to keep downloads sortable.
+          echo "=== Stamping firmware filenames with ${IMAGE_VERSION} ==="
+          for f in "$FIRMWARE_PATH"/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            case "$base" in
+              sha256sums|*.manifest|*.buildinfo|config.seed) continue ;;
+              "${IMAGE_VERSION}_"*) continue ;;
+            esac
+            mv -f "$f" "$FIRMWARE_PATH/${IMAGE_VERSION}_${base}"
+            echo "  $base -> ${IMAGE_VERSION}_${base}"
+          done
+          if [ -f "$FIRMWARE_PATH/sha256sums" ]; then
+            (cd "$FIRMWARE_PATH" && rm -f sha256sums && find . -maxdepth 1 -type f -printf '%P\n' | sort | xargs -r sha256sum > sha256sums) || true
+            echo "=== sha256sums (regenerated) ==="
+            cat "$FIRMWARE_PATH/sha256sums" || true
+          fi
+          echo "=== Firmware files ==="
+          find ./bin/targets/ -type f \( -name "*.img*" -o -name "*.bin" -o -name "*.gz" \) 2>/dev/null | sort || echo "No firmware found"
+          MANIFEST_FILE=$(find ./bin/targets/ -name "*.manifest" | head -1)
+          if [ -f "$MANIFEST_FILE" ]; then
+            FULL_KERNEL_VERSION=$(grep "^kernel " "$MANIFEST_FILE" | cut -d'-' -f2 | tr -d ' ')
+            KERNEL_VERSION=$(echo "$FULL_KERNEL_VERSION" | sed 's/~.*//')
+            if [ ! -z "$KERNEL_VERSION" ]; then
+              echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
+            fi
+          fi
+
+      - name: Upload buildinfo
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_buildinfo_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/buildinfo/
+
+      - name: Upload package
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_package_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./artifact/package/
+
+      - name: Upload firmware
+        if: steps.compile.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_firmware_${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}_${{ env.BUILD_STAMP }}_run${{ github.run_number }}_${{ env.COMMIT_SHORT_HASH }}
+          path: ./bin/targets/
+
+      - name: Create GitHub Release
+        if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          name: ${{ env.FIRMWARE_TAG }} ${{ env.BUILD_STAMP }} (${{ env.COMMIT_SHORT_HASH }})
+          allowUpdates: true
+          tag: ${{ env.FIRMWARE_TAG }}-${{ env.BUILD_STAMP }}-${{ env.COMMIT_SHORT_HASH }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: ${{ env.FIRMWARE_PATH }}/*
+          body: |
+            ## 🎉 OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}
+
+            ### 📒 固件信息
+            - 💻 平台架构: ${{ env.DEVICE_TARGET }}/${{ env.DEVICE_SUBTARGET }}
+            - 🏷️ 固件版本: ${{ env.IMAGE_VERSION }}（等于提交时间的 UTC 时间戳 + 短 hash，可排序）
+            - 🚀 内核版本: ${{ env.KERNEL_VERSION }}
+            - 🌐 默认地址: 192.168.1.1
+            - 🔑 默认密码: admin或无密码
+            - 📅 构建时间: ${{ env.BUILD_DATE }}
+
+            ### 📝 源码信息
+            - 📦 源码仓库: ${{ env.SOURCE_REPO }}
+            - ${{ env.COMMIT_AUTHOR }}
+            - ${{ env.COMMIT_DATE }}
+            - ${{ env.COMMIT_MESSAGE }}
+            - `${{ env.COMMIT_HASH }}`
+
+            ### 📦 固件下载说明
+            - 根据设备型号选择对应的固件文件
+            - 使用 sysupgrade 格式保留配置升级
+            - 首次刷机请使用 initramfs 或 SD卡 镜像
+
+            ### ⚠️ 注意事项
+            - 首次使用请修改密码
+            - 请勿跨版本保留配置刷机
+            - 刷机前请备份重要数据
+
+      - name: Prune caches from superseded key schemes
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_GEN: "-${{ env.CACHE_GEN }}-"
+          KEEP_SHA_DISPATCH: ${{ github.sha }}
+          KEEP_SHA_CHECK: ${{ needs.check.outputs.commitHash }}
+        run: |
+          # Every key this workflow writes carries -${CACHE_GEN}- (feeds, toolchain, tools,
+          # ccache, packages, apt-archives); the built-<commit> markers are the only
+          # exception and are matched by hash below. Anything else came from an older key
+          # scheme and can never be an exact hit again -- but it can still be a restore-keys
+          # hit, because those prefixes stop before the generation component, and
+          # restore-keys resolves to the most recently created match. So a stale entry can
+          # win over the live one and restore a tree that then has to be rebuilt anyway.
+          # Keeping them is a net loss, and 19 such entries (9.2 GB) are what pushed this
+          # repository past GitHub's 10 GB per-repo cache quota -- past which eviction is
+          # LRU across *all* entries and can take a live toolchain snapshot.
+          # Any new cache key must carry -${CACHE_GEN}- or be exempted here.
+          api="https://api.github.com/repos/${{ github.repository }}/actions/caches"
+          : > /tmp/caches.ndjson
+          page=1
+          while :; do
+            resp=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+                     -H "Accept: application/vnd.github+json" "$api?per_page=100&page=$page") \
+              || { echo "listing caches failed on page $page; skipping the prune"; exit 0; }
+            printf '%s' "$resp" | jq -c '.actions_caches[]' >> /tmp/caches.ndjson
+            [ "$(printf '%s' "$resp" | jq '.actions_caches | length')" -lt 100 ] && break
+            page=$((page + 1))
+          done
+          jq -r '[.id, (.size_in_bytes // 0), .key] | @tsv' /tmp/caches.ndjson > /tmp/caches.tsv
+          before=0; kept=0; pruned=0
+          while IFS=$'\t' read -r id size key; do
+            before=$((before + size))
+            case "$key" in
+              *"$KEEP_GEN"*) ;;
+              built-"$KEEP_SHA_DISPATCH"|built-"$KEEP_SHA_CHECK") ;;
+              *)
+                code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" "$api/$id")
+                if [ "$code" = 204 ]; then
+                  pruned=$((pruned + 1))
+                  echo "  pruned $((size / 1048576)) MB  $key"
+                  continue
+                fi
+                echo "  prune failed (HTTP $code)  $key"
+                ;;
+            esac
+            kept=$((kept + size))
+          done < /tmp/caches.tsv
+          entries=$(( $(wc -l < /tmp/caches.tsv) - pruned ))
+          echo "cache: kept $entries entries / $((kept / 1048576)) MB, pruned $pruned, was $((before / 1048576)) MB"
