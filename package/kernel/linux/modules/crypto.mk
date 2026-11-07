@@ -324,9 +324,9 @@ define KernelPackage/crypto-ghash
   DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_GHASH \
-	CONFIG_CRYPTO_GHASH_ARM_CE
-  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
+	CONFIG_CRYPTO_LIB_GF128HASH
+  FILES:=$(LINUX_DIR)/lib/crypto/libgf128hash.ko
+  AUTOLOAD:=$(call AutoLoad,09,libgf128hash)
   $(call AddDepends/crypto)
 endef
 
