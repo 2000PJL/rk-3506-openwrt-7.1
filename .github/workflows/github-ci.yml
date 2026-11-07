@@ -276,16 +276,25 @@ jobs:
             echo "Feeds cache hit, skipping update."
           fi
           ./scripts/feeds install -a
-          # refresh_config() above reran make oldconfig; these are the symbols whose silent
-          # disappearance costs a whole build's worth of time.
-          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE; do
+          # "Get Device Info" copies the seed and runs make defconfig before any feed
+          # exists, so tmp/.config-package.in has no feed symbols yet and kconfig drops
+          # every one of them: 421 requested packages became 178, and all of LuCI with
+          # them. refresh_config() only reruns defconfig on the surviving .config, so it
+          # cannot bring them back. Re-apply the seed now that feeds/*.index exist.
+          if [ -f config/hz-sp-rk3506-MiniEVM_defconfig ]; then
+            cp config/hz-sp-rk3506-MiniEVM_defconfig .config
+            make defconfig
+          fi
+          # A silently dropped symbol costs a whole build's worth of time, or in LuCI's
+          # case the entire web interface, so assert the ones that must survive.
+          for sym in CONFIG_DEVEL CONFIG_CCACHE CONFIG_AUTOREMOVE CONFIG_FEED_luci CONFIG_PACKAGE_luci; do
             if ! grep -q "^${sym}=y" .config; then
-              echo "::error::feeds install dropped ${sym}=y"
-              grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)' .config || echo '  (none of them in .config)'
+              echo "::error::${sym}=y is not in .config after feeds install"
+              grep -E "^${sym}[= ]" .config || echo "  (absent from .config)"
               exit 1
             fi
           done
-          grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE)=' .config
+          grep -E '^CONFIG_(DEVEL|CCACHE|AUTOREMOVE|FEED_luci|PACKAGE_luci)=' .config
 
       - name: Restore toolchain cache
         id: toolchain
