@@ -452,6 +452,21 @@ jobs:
               echo "=== Last 80 lines of package re-run ==="
               tail -80 /tmp/pkg-verbose.log || true
             fi
+            # include/verbose.mk wraps every non-verbose SUBMAKE in `>/dev/null 2>&1`,
+            # so a target-stage failure leaves only the MESSAGE line -- no recipe output
+            # at all. Re-running package/install cannot surface it (run #37 died in
+            # target/linux install and the verbose log ended cleanly at package/install).
+            # Re-run the stage that actually died, with the same -j as the main build so
+            # a parallel-only failure still reproduces.
+            stage=$(grep -o 'ERROR: [^ ]* failed to build' /tmp/build-main.log | head -1 | sed 's|ERROR: ||; s| failed to build||')
+            echo "Failing stage: ${stage:-unknown}"
+            if [ "$stage" = "target/linux" ]; then
+              echo "================================"
+              echo "=== Verbose re-run: target/install ==="
+              echo "================================"
+              make target/install -j$(($(nproc) + 2)) V=s 2>&1 | tee /tmp/target-verbose.log | tail -200
+              echo "target/install re-run exit: ${PIPESTATUS[0]}"
+            fi
             echo "================================"
             echo "=== Full re-run with -j1 V=s (cross-check) ==="
             echo "================================"
@@ -461,10 +476,15 @@ jobs:
             # Broaden beyond the opkg/rootfs patterns: a kernel or C compile
             # failure (e.g. "error:", "make[N]: ***", "undefined reference")
             # would otherwise be swallowed by the parallel build's output.
-            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
+            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/target-verbose.log /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
             echo "================================"
             echo "=== Last 60 lines of -j1 verbose log (error context) ==="
             tail -60 /tmp/build-verbose.log || true
+            if [ -f /tmp/target-verbose.log ]; then
+              echo "================================"
+              echo "=== Last 80 lines of target/install verbose log ==="
+              tail -80 /tmp/target-verbose.log || true
+            fi
             echo "================================"
             exit 1
           fi
@@ -540,7 +560,7 @@ jobs:
         if: always()
         run: |
           mkdir -p ./artifact/evidence
-          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log; do
+          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log /tmp/target-verbose.log; do
             [ -f "$f" ] && cp -f "$f" ./artifact/evidence/ 2>/dev/null
           done
           [ -d bin/.logs ] && cp -rf bin/.logs ./artifact/evidence/host-logs 2>/dev/null
