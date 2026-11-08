@@ -1,0 +1,27 @@
+#!/bin/sh /etc/rc.common
+# RK3506 has three Cortex-A7 cores and two GMACs.  Leave CPU0 to the kernel and
+# the non-network interrupts (USB, MMC, UART) and give each MAC its own core so
+# that the RX/TX softirqs of one port do not starve the other.
+#
+# Both GMACs own two GIC lines (macirq and eth_wake_irq); pinning both is
+# harmless and keeps the wake line on the same core as the data path.
+
+START=25
+
+ETH0_CPUS=2   # CPU1
+ETH1_CPUS=4   # CPU2
+
+pin_irqs() {
+	local name="$1" mask="$2" irq
+
+	[ -r /proc/interrupts ] || return 0
+	for irq in $(awk -v n="$name" '$NF == n { sub(":", "", $1); print $1 }' /proc/interrupts); do
+		[ -w "/proc/irq/$irq/smp_affinity" ] || continue
+		echo "$mask" > "/proc/irq/$irq/smp_affinity" 2>/dev/null
+	done
+}
+
+start() {
+	pin_irqs eth0 "$ETH0_CPUS"
+	pin_irqs eth1 "$ETH1_CPUS"
+}
