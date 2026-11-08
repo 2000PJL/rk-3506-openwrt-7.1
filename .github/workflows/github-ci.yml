@@ -399,7 +399,8 @@ jobs:
           for d in dl build_dir/toolchain-* staging_dir/toolchain-* \
                    build_dir/host* staging_dir/host* \
                    staging_dir/target-* build_dir/target-*; do
-            find "$d" -type f -exec touch {} + 2>/dev/null || true
+            # subdir.mk gates each subtree with mtime-only timestamp.pl: re-dating stamp/ skips it wholesale.
+            find "$d" -type f -not -path '*/stamp/*' -exec touch {} + 2>/dev/null || true
           done
           echo "=== restored tree sizes after re-dating ==="
           du -sh build_dir staging_dir dl 2>/dev/null || true
