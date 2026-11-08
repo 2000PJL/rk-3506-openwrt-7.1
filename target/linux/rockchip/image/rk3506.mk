@@ -45,7 +45,7 @@ define Device/hzhy_mini_evm_emmc
   DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
     kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
     urandom-seed
-  KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
   # MMC/SD style target: squashfs only, no UBIFS variant (see NAND devices)
   FILESYSTEMS := squashfs
@@ -60,7 +60,7 @@ define Device/hzhy_mini_evm_nand
   DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
     kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
     kmod-mtd-rw urandom-seed
-  KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
   # SPI-NAND target: never an MMC-style disk image. The kernel is stored raw in
   # the "boot" MTD partition and the rootfs lives in a UBI volume on the
@@ -88,7 +88,7 @@ define Device/hzhy_mini_evm_nand256
   DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
     kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
     kmod-mtd-rw urandom-seed
-  KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
   # See the NAND device above; same idea, sized for the 256 MiB layout
   #   mtd3 "boot"   -> <img>-ubifs-kernel.bin
@@ -113,7 +113,7 @@ define Device/hzhy_mini_evm_sd
   DEVICE_PACKAGES := kmod-usb-hid kmod-usb-ohci kmod-usb2 kmod-usb-storage \
     kmod-usb-storage-extras kmod-usb-net kmod-usb-core kmod-gpio-button-hotplug \
     kmod-fs-ext4 kmod-fs-vfat kmod-mmc urandom-seed
-  KERNEL := kernel-bin | lzma | fit lzma $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+  KERNEL := kernel-bin | fit none $$(DTS_DIR)/$$(DEVICE_DTS).dtb
   BOOT_SCRIPT := rk3506
   # TF/eMMC image: bootloader at sector 64/0x4000, then boot + rootfs.
   # Written to SD with: dd if=...-sd.img of=/dev/sdX bs=4M conv=fsync
