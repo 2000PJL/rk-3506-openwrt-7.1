@@ -21,3 +21,4 @@
 0021-ARM-dts-rockchip-rk3506-fix-mdio-EBUSY-drop-snps-dwmac-mdio-compatible.patch
 0022-ARM-rockchip-rk3506-add-SMP-coherency-diagnostic.patch
 0023-mtd-spinand-add-hiksemi-support.patch
+0024-usb-hub-disable-autosuspend-for-WCH-CH334R.patch

@@ -1,0 +1,60 @@
+From: ubuntu24-rk <claude@gmail.com>
+Date: Sun, 8 Nov 2026 19:10:00 +0800
+Subject: [PATCH] usb: hub: disable autosuspend for WCH CH334R
+
+The HZ-RK3506SP MiniEVM carries a WCH CH334R (1a86:8091) four-port hub
+on the dwc2 otg1 controller. With runtime autosuspend enabled the hub
+loses downstream hotplug: a device plugged into one of its ports gets
+VBUS (the rail is always on) but is never enumerated by the host. An
+Android phone therefore shows only "charging" and never offers the USB
+mode dialog, because its gadget never sees CONNECTED; a USB flash drive
+simply does not appear.
+
+hub_probe() forces the autosuspend delay to 0 for hubs, so the CH334R
+suspends as soon as it is idle. Over a 22 h uptime it spent 66346 s
+suspended against 12931 s active. The connect event stays pending inside
+the hub until something resumes it: reading
+/sys/bus/usb/devices/2-1:1.0/2-1-portN/disable calls
+usb_autopm_get_interface() (drivers/usb/core/port.c), and the device
+enumerates at that exact instant. Writing "on" to the hub's
+power/control makes hotplug work first time, every time, after which
+rndis_host binds and usb0 gets a DHCP lease.
+
+The two guards in autosuspend_check() (drivers/usb/core/driver.c) that
+should have prevented this both pass: the CH334R advertises remote wakeup
+(bmAttributes 0xe0) so device_can_wakeup() is true, and dwc2 never sets
+hcd->cant_recv_wakeups, so the root-hub-child check does not fire either.
+
+Use the existing HUB_QUIRK_DISABLE_AUTOSUSPEND, already applied to the
+SMSC USB5534B, Cypress CY7C65632 and TI TUSB8041 hubs for the same class
+of problem. This keeps the quirk scoped to the one chip; every other
+USB device still autosuspends normally.
+
+Signed-off-by: ubuntu24-rk <claude@gmail.com>
+---
+ drivers/usb/core/hub.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+--- a/drivers/usb/core/hub.c	2026-11-08 19:01:57.418702434 +0800
++++ b/drivers/usb/core/hub.c	2026-11-08 19:01:57.434703120 +0800
+@@ -55,6 +55,8 @@
+ #define USB_PRODUCT_USB4913			0x4913
+ #define USB_PRODUCT_USB4914			0x4914
+ #define USB_PRODUCT_USB4915			0x4915
++#define USB_VENDOR_WCH			0x1a86
++#define USB_PRODUCT_CH334R		0x8091
+ #define HUB_QUIRK_CHECK_PORT_AUTOSUSPEND	BIT(0)
+ #define HUB_QUIRK_DISABLE_AUTOSUSPEND		BIT(1)
+ #define HUB_QUIRK_REDUCE_FRAME_INTR_BINTERVAL	BIT(2)
+@@ -6007,6 +6009,11 @@
+       .bInterfaceClass = USB_CLASS_HUB,
+       .driver_info = HUB_QUIRK_DISABLE_AUTOSUSPEND},
+     { .match_flags = USB_DEVICE_ID_MATCH_VENDOR
++			| USB_DEVICE_ID_MATCH_PRODUCT,
++      .idVendor = USB_VENDOR_WCH,
++      .idProduct = USB_PRODUCT_CH334R,
++      .driver_info = HUB_QUIRK_DISABLE_AUTOSUSPEND},
++    { .match_flags = USB_DEVICE_ID_MATCH_VENDOR
+                    | USB_DEVICE_ID_MATCH_PRODUCT,
+       .idVendor = USB_VENDOR_CYPRESS,
+       .idProduct = USB_PRODUCT_CY7C65632,
