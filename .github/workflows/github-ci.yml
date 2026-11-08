@@ -392,15 +392,28 @@ jobs:
       # (include/package.mk:114, include/kernel-build.mk:13 - hashed over paths and mtimes, so a
       # new checkout is always looked up under a name the restored tree has never seen), and the
       # dtb, kernel .configured/.image and FIT rules are FORCE'd
-      # (include/image.mk:668, include/kernel-build.mk:129,144).
+      # (include/image.mk:668, include/kernel-build.mk:129,144). The fingerprint argument does
+      # not cover tools/ and toolchain/: include/toolchain-build.mk:5 turns AUTOREMOVE/AUTOREBUILD
+      # off and :14 drops the fingerprint from .prepared, so there the mtime ordering is the only
+      # thing standing between a restored tree and a full rebuild -- hence the gate exclusion below.
       - name: Repair timestamps of restored build trees
         run: |
           echo "Re-dating restored build trees..."
           for d in dl build_dir/toolchain-* staging_dir/toolchain-* \
                    build_dir/host* staging_dir/host* \
                    staging_dir/target-* build_dir/target-*; do
-            # subdir.mk gates each subtree with mtime-only timestamp.pl: re-dating stamp/ skips it wholesale.
-            find "$d" -type f -not -path '*/stamp/*' -exec touch {} + 2>/dev/null || true
+            # stamp/ holds two different kinds of file. The subtree gates (.tools_*,
+            # .toolchain_*, .package_*, .target_* -- include/subdir.mk:92) are compared by
+            # mtime alone, so re-dating them skips the subtree wholesale: that is how a
+            # zstd-less mksquashfs4 survived run #37. The .*_installed stamps are ordinary
+            # make prerequisites (include/host-build.mk:188), so leaving them old while
+            # .built is re-dated makes every tool and toolchain package look out of date:
+            # run #39 clean-built all 45 host tools, then re-ran binutils' install over a
+            # build tree whose internal mtimes had just been scrambled. Skip only the gates.
+            find "$d" -type f \
+              -not -name '.tools_*' -not -name '.toolchain_*' \
+              -not -name '.package_*' -not -name '.target_*' \
+              -exec touch {} + 2>/dev/null || true
           done
           echo "=== restored tree sizes after re-dating ==="
           du -sh build_dir staging_dir dl 2>/dev/null || true
@@ -454,11 +467,12 @@ jobs:
               tail -80 /tmp/pkg-verbose.log || true
             fi
             # include/verbose.mk wraps every non-verbose SUBMAKE in `>/dev/null 2>&1`,
-            # so a target-stage failure leaves only the MESSAGE line -- no recipe output
-            # at all. Re-running package/install cannot surface it (run #37 died in
-            # target/linux install and the verbose log ended cleanly at package/install).
-            # Re-run the stage that actually died, with the same -j as the main build so
-            # a parallel-only failure still reproduces.
+            # so a failing stage leaves only the MESSAGE line -- no recipe output at all.
+            # Re-running package/install cannot surface it (run #37 died in target/linux
+            # install and the verbose log ended cleanly at package/install; run #39 died in
+            # toolchain/binutils and produced no stage log whatsoever). Re-run the stage that
+            # actually died, with the same -j as the main build so a parallel-only failure
+            # still reproduces.
             stage=$(grep -o 'ERROR: [^ ]* failed to build' /tmp/build-main.log | head -1 | sed 's|ERROR: ||; s| failed to build||')
             echo "Failing stage: ${stage:-unknown}"
             if [ "$stage" = "target/linux" ]; then
@@ -467,6 +481,14 @@ jobs:
               echo "================================"
               make target/install -j$(($(nproc) + 2)) V=s 2>&1 | tee /tmp/target-verbose.log | tail -200
               echo "target/install re-run exit: ${PIPESTATUS[0]}"
+            elif [ -n "$stage" ] && [ -z "$pkg" ]; then
+              # tools/* and toolchain/* were previously left silent. The package branch above
+              # already covers package/*, so only run this when it did not fire.
+              echo "================================"
+              echo "=== Verbose re-run: ${stage}/compile ==="
+              echo "================================"
+              make "${stage}/compile" -j$(($(nproc) + 2)) V=s 2>&1 | tee /tmp/stage-verbose.log | tail -200
+              echo "${stage}/compile re-run exit: ${PIPESTATUS[0]}"
             fi
             echo "================================"
             echo "=== Full re-run with -j1 V=s (cross-check) ==="
@@ -477,15 +499,17 @@ jobs:
             # Broaden beyond the opkg/rootfs patterns: a kernel or C compile
             # failure (e.g. "error:", "make[N]: ***", "undefined reference")
             # would otherwise be swallowed by the parallel build's output.
-            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/target-verbose.log /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
+            grep -i -B3 -A8 -E "error:|error [0-9]|make\[[0-9]+\]: \*\*\*|No rule to make target|undefined reference|fatal error|cannot stat|No such file or directory|collected errors|cannot install|check_data_file_clashes|overwrites|No space left|incompatible|not in the table|satisfy_dependencies|pkg_hash|opkg_install|prepare_rootfs|rootfs_config|postinst|returned [^0]" /tmp/stage-verbose.log /tmp/target-verbose.log /tmp/pkg-verbose.log /tmp/build-verbose.log 2>/dev/null | head -200 || true
             echo "================================"
             echo "=== Last 60 lines of -j1 verbose log (error context) ==="
             tail -60 /tmp/build-verbose.log || true
-            if [ -f /tmp/target-verbose.log ]; then
-              echo "================================"
-              echo "=== Last 80 lines of target/install verbose log ==="
-              tail -80 /tmp/target-verbose.log || true
-            fi
+            for f in /tmp/target-verbose.log /tmp/stage-verbose.log; do
+              if [ -f "$f" ]; then
+                echo "================================"
+                echo "=== Last 80 lines of $f ==="
+                tail -80 "$f" || true
+              fi
+            done
             echo "================================"
             exit 1
           fi
@@ -561,7 +585,7 @@ jobs:
         if: always()
         run: |
           mkdir -p ./artifact/evidence
-          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log /tmp/target-verbose.log; do
+          for f in /tmp/build-main.log /tmp/build-verbose.log /tmp/pkg-verbose.log /tmp/target-verbose.log /tmp/stage-verbose.log; do
             [ -f "$f" ] && cp -f "$f" ./artifact/evidence/ 2>/dev/null
           done
           [ -d bin/.logs ] && cp -rf bin/.logs ./artifact/evidence/host-logs 2>/dev/null
