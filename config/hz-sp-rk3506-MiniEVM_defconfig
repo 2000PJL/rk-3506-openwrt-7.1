@@ -16,6 +16,13 @@ CONFIG_TARGET_KERNEL_PARTSIZE=32
 # CONFIG_TARGET_ROOTFS_EXT4FS is not set
 CONFIG_TARGET_ROOTFS_PARTSIZE=512
 CONFIG_TARGET_ROOTFS_UBIFS=y
+#
+# rootfs 有 1687 个文件、平均 18.8 KB，而 kconfig 默认按 256 KiB 粒度解压
+# （config/Config-images.in:153）：读一个小文件最坏要解 256 KB。降到 64 KiB
+# 换取更小的解压放大，代价是压缩率下降、镜像变大。
+# include/image.mk:85 会拼成 -b 64k 传给 mksquashfs。
+#
+CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=64
 
 CONFIG_BUSYBOX_CUSTOM=y
 CONFIG_BUSYBOX_CONFIG_FDISK=y
